@@ -1,0 +1,450 @@
+"use client";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import useSWR, { useSWRConfig } from "swr";
+import { useEffect, useRef, useState } from "react";
+import { api } from "@/lib/api";
+import { formatDate, truncate } from "@/lib/utils";
+import { Badge } from "@/components/ui/Badge";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { PageLoader } from "@/components/ui/LoadingSpinner";
+import type { EvaluationRun, TestCase } from "@/types";
+
+/* ─── Trigger-run modal ─────────────────────────────────────────────── */
+function TriggerRunModal({ testSetId, onClose }: { testSetId: string; onClose: () => void }) {
+  const router = useRouter();
+  const [pipelineVersion, setPipelineVersion] = useState("demo-rag-v1");
+  const [triggeredBy, setTriggeredBy] = useState("browser");
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function handleStart() {
+    setLoading(true);
+    setError(null);
+    try {
+      const run: EvaluationRun = await api.runs.trigger({
+        test_set_id: testSetId,
+        pipeline_version: pipelineVersion || undefined,
+        triggered_by: triggeredBy || "browser",
+        notes: notes.trim() || undefined,
+      });
+      router.push(`/runs/${run.id}`);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to trigger run");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
+    >
+      <div className="bg-white rounded-xl border border-gray-200 shadow-xl w-full max-w-md mx-4 p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold text-gray-900">Trigger Evaluation Run</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+        </div>
+        {error && (
+          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</p>
+        )}
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Pipeline version <span className="font-normal text-gray-400">(optional)</span>
+            </label>
+            <input
+              value={pipelineVersion}
+              onChange={(e) => setPipelineVersion(e.target.value)}
+              placeholder="e.g. v1.2.3 or main"
+              className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              What changed in this version? <span className="font-normal text-gray-400">(optional)</span>
+            </label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder={"e.g. Switched LLM to gpt-4o, increased top-k from 3→5, rewrote system prompt to be more concise"}
+              rows={3}
+              className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Triggered by</label>
+            <input
+              value={triggeredBy}
+              onChange={(e) => setTriggeredBy(e.target.value)}
+              placeholder="browser"
+              className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+          </div>
+        </div>
+        <div className="flex gap-3 pt-1">
+          <button
+            onClick={handleStart}
+            disabled={loading}
+            className="flex-1 bg-brand-600 text-white text-sm font-medium py-2 rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+          >
+            {loading ? "Starting…" : "▶ Start Run"}
+          </button>
+          <button
+            onClick={onClose}
+            className="flex-1 text-sm font-medium py-2 rounded-md border border-gray-200 hover:bg-gray-50 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Main page ─────────────────────────────────────────────────────── */
+export default function TestSetDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
+  const { mutate } = useSWRConfig();
+
+  const { data: testSet } = useSWR(`test-set-${id}`, () => api.testSets.get(id));
+  const { data: cases, isLoading } = useSWR(`test-cases-${id}`, () =>
+    api.testCases.list(id, 0, 200)
+  );
+
+  // Inline editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ query: "", ground_truth: "", tags: "" });
+  const [saving, setSaving] = useState(false);
+  const [tableError, setTableError] = useState<string | null>(null);
+
+  // Add new test case state
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newCase, setNewCase] = useState({ query: "", ground_truth: "", tags: "" });
+  const [adding, setAdding] = useState(false);
+
+  // Run modal state
+  const [showRunModal, setShowRunModal] = useState(false);
+  useEffect(() => {
+    if (searchParams.get("run") === "1") setShowRunModal(true);
+  }, [searchParams]);
+
+  if (!testSet || isLoading) return <PageLoader />;
+
+  function startEdit(tc: TestCase) {
+    setEditingId(tc.id);
+    setDraft({
+      query: tc.query,
+      ground_truth: tc.ground_truth ?? "",
+      tags: (tc.tags ?? []).join(", "),
+    });
+    setTableError(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setTableError(null);
+  }
+
+  async function saveEdit(tc: TestCase) {
+    setSaving(true);
+    setTableError(null);
+    try {
+      await api.testCases.update(id, tc.id, {
+        query: draft.query.trim(),
+        ground_truth: draft.ground_truth.trim() || null,
+        tags: draft.tags.split(",").map((t) => t.trim()).filter(Boolean),
+      } as Partial<TestCase>);
+      await mutate(`test-cases-${id}`);
+      await mutate(`test-set-${id}`);
+      setEditingId(null);
+    } catch (e: unknown) {
+      setTableError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteCase(tc: TestCase) {
+    if (!window.confirm(`Delete this test case?\n\n"${truncate(tc.query, 80)}"`)) return;
+    setTableError(null);
+    try {
+      await api.testCases.delete(id, tc.id);
+      await mutate(`test-cases-${id}`);
+      await mutate(`test-set-${id}`);
+    } catch (e: unknown) {
+      setTableError(e instanceof Error ? e.message : "Delete failed");
+    }
+  }
+
+  async function createCase() {
+    if (!newCase.query.trim()) return;
+    setAdding(true);
+    setTableError(null);
+    try {
+      await api.testCases.create(id, {
+        query: newCase.query.trim(),
+        ground_truth: newCase.ground_truth.trim() || null,
+        tags: newCase.tags.split(",").map((t) => t.trim()).filter(Boolean),
+      } as Partial<TestCase>);
+      await mutate(`test-cases-${id}`);
+      await mutate(`test-set-${id}`);
+      setNewCase({ query: "", ground_truth: "", tags: "" });
+      setShowAddForm(false);
+    } catch (e: unknown) {
+      setTableError(e instanceof Error ? e.message : "Failed to create test case");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  return (
+    <>
+      {showRunModal && (
+        <TriggerRunModal testSetId={id} onClose={() => setShowRunModal(false)} />
+      )}
+
+      <div className="p-6 space-y-6 max-w-5xl mx-auto">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm text-gray-400 mb-1">
+              <Link href="/test-sets" className="hover:text-gray-600">Test Sets</Link>
+              <span>/</span>
+              <span className="text-gray-700">{testSet.name}</span>
+            </div>
+            <h1 className="text-xl font-bold text-gray-900">{testSet.name}</h1>
+            <p className="text-sm text-gray-500">
+              {testSet.test_case_count} cases · v{testSet.version} · Updated {formatDate(testSet.updated_at)}
+            </p>
+          </div>
+          <button
+            onClick={() => setShowRunModal(true)}
+            className="flex-shrink-0 px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md hover:bg-brand-700 transition-colors"
+          >
+            ▶ Run Evaluation
+          </button>
+        </div>
+
+        {testSet.description && (
+          <p className="text-sm text-gray-600">{testSet.description}</p>
+        )}
+
+        {tableError && (
+          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{tableError}</p>
+        )}
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-900">Test Cases</h2>
+              <button
+                onClick={() => { setShowAddForm(true); setEditingId(null); setTableError(null); }}
+                disabled={showAddForm}
+                className="text-xs px-3 py-1.5 bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-40 transition-colors"
+              >
+                + Add Case
+              </button>
+            </div>
+          </CardHeader>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100">
+                  {["Query", "Ground Truth", "Tags", "Rules", "Created", "Actions"].map((h) => (
+                    <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {/* ── Inline add form ── */}
+                {showAddForm && (
+                  <tr className="bg-green-50/40">
+                    <td className="px-4 py-3 align-top">
+                      <textarea
+                        autoFocus
+                        value={newCase.query}
+                        onChange={(e) => setNewCase({ ...newCase, query: e.target.value })}
+                        placeholder="Enter the question or prompt…"
+                        rows={3}
+                        className="w-full text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-400 resize-none"
+                      />
+                    </td>
+                    <td className="px-4 py-3 align-top">
+                      <textarea
+                        value={newCase.ground_truth}
+                        onChange={(e) => setNewCase({ ...newCase, ground_truth: e.target.value })}
+                        placeholder="Expected answer (optional)"
+                        rows={3}
+                        className="w-full text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-400 resize-none"
+                      />
+                    </td>
+                    <td className="px-4 py-3 align-top">
+                      <input
+                        value={newCase.tags}
+                        onChange={(e) => setNewCase({ ...newCase, tags: e.target.value })}
+                        placeholder="tag1, tag2"
+                        className="w-28 text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-xs text-gray-300 align-top">—</td>
+                    <td className="px-4 py-3 text-xs text-gray-300 align-top">now</td>
+                    <td className="px-4 py-3 align-top whitespace-nowrap">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={createCase}
+                          disabled={adding || !newCase.query.trim()}
+                          className="text-xs px-2.5 py-1 bg-brand-600 text-white rounded hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {adding ? "Saving…" : "Save"}
+                        </button>
+                        <button
+                          onClick={() => { setShowAddForm(false); setNewCase({ query: "", ground_truth: "", tags: "" }); }}
+                          disabled={adding}
+                          className="text-xs px-2.5 py-1 border border-gray-200 rounded hover:bg-gray-100"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {(cases ?? []).map((tc) => {
+                  const isEditing = editingId === tc.id;
+                  return (
+                    <tr key={tc.id} className={isEditing ? "bg-blue-50/40" : "hover:bg-gray-50"}>
+                      {/* Query */}
+                      <td className="px-4 py-3 max-w-xs align-top">
+                        {isEditing ? (
+                          <textarea
+                            value={draft.query}
+                            onChange={(e) => setDraft({ ...draft, query: e.target.value })}
+                            rows={3}
+                            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-400 resize-none"
+                          />
+                        ) : (
+                          <p className="text-gray-900 text-xs">{truncate(tc.query, 100)}</p>
+                        )}
+                      </td>
+
+                      {/* Ground Truth */}
+                      <td className="px-4 py-3 max-w-xs align-top">
+                        {isEditing ? (
+                          <textarea
+                            value={draft.ground_truth}
+                            onChange={(e) => setDraft({ ...draft, ground_truth: e.target.value })}
+                            rows={3}
+                            placeholder="optional"
+                            className="w-full text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-400 resize-none"
+                          />
+                        ) : (
+                          <span className="text-xs text-gray-500">
+                            {tc.ground_truth ? truncate(tc.ground_truth, 60) : "—"}
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Tags */}
+                      <td className="px-4 py-3 align-top">
+                        {isEditing ? (
+                          <input
+                            value={draft.tags}
+                            onChange={(e) => setDraft({ ...draft, tags: e.target.value })}
+                            placeholder="tag1, tag2"
+                            className="w-28 text-xs border border-gray-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                          />
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {(tc.tags ?? []).map((tag) => (
+                              <Badge key={tag} variant="blue">{tag}</Badge>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Rules — read-only */}
+                      <td className="px-4 py-3 text-xs text-gray-500 align-top">
+                        {(tc.failure_rules ?? []).length > 0 ? (
+                          <Badge variant="orange">{tc.failure_rules!.length} rules</Badge>
+                        ) : (
+                          <span className="text-gray-300">none</span>
+                        )}
+                      </td>
+
+                      {/* Created */}
+                      <td className="px-4 py-3 text-xs text-gray-400 align-top whitespace-nowrap">
+                        {formatDate(tc.created_at)}
+                      </td>
+
+                      {/* Actions */}
+                      <td className="px-4 py-3 align-top whitespace-nowrap">
+                        {isEditing ? (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => saveEdit(tc)}
+                              disabled={saving || !draft.query.trim()}
+                              className="text-xs px-2.5 py-1 bg-brand-600 text-white rounded hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {saving ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              onClick={cancelEdit}
+                              disabled={saving}
+                              className="text-xs px-2.5 py-1 border border-gray-200 rounded hover:bg-gray-100"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => startEdit(tc)}
+                              className="text-xs px-2.5 py-1 border border-gray-200 rounded hover:bg-gray-100 text-gray-600"
+                            >
+                              ✎ Edit
+                            </button>
+                            <button
+                              onClick={() => deleteCase(tc)}
+                              className="text-xs px-2.5 py-1 border border-red-200 rounded hover:bg-red-50 text-red-600"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {cases?.length === 0 && !showAddForm && (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-8 text-center text-gray-400 text-sm">
+                      No test cases yet.{" "}
+                      <button
+                        onClick={() => setShowAddForm(true)}
+                        className="text-brand-600 hover:underline"
+                      >
+                        Add your first test case →
+                      </button>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    </>
+  );
+}

@@ -1,0 +1,237 @@
+name: RAG Evaluation
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      test_set_id:
+        description: "Test set UUID to evaluate (overrides rageval.yaml)"
+        required: false
+        default: ""
+      pipeline_version:
+        description: "Pipeline version label"
+        required: false
+        default: ""
+
+env:
+  RAGEVAL_API_URL: ${{ secrets.RAGEVAL_API_URL || 'http://localhost:8000' }}
+
+jobs:
+  evaluate:
+    name: Evaluate RAG Pipeline
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rageval
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            runner/requirements.txt
+            backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Install runner dependencies
+        run: pip install -r runner/requirements.txt
+
+      - name: Run database migrations
+        env:
+          SYNC_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rageval
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Start backend API (background)
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/rageval
+          SYNC_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rageval
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        working-directory: backend
+        run: |
+          uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          # Wait for API to be ready
+          timeout 30 bash -c 'until curl -sf http://localhost:8000/api/v1/health; do sleep 1; done'
+          echo "API is ready"
+
+      - name: Start Celery worker (background)
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/rageval
+          SYNC_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rageval
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        working-directory: backend
+        run: |
+          celery -A app.workers.celery_app worker -l info -Q evaluations -c 2 &
+          sleep 3
+          echo "Celery worker started"
+
+      - name: Execute evaluation run
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+          PIPELINE_VERSION: ${{ inputs.pipeline_version || github.sha }}
+        run: |
+          python -m runner.cli run \
+            --config rageval.yaml \
+            ${{ inputs.test_set_id && format('--test-set {0}', inputs.test_set_id) || '' }} \
+            --commit-sha "$GITHUB_SHA" \
+            --branch "$GITHUB_REF_NAME" \
+            --pr-number "$GITHUB_PR_NUMBER" \
+            --pipeline-version "$PIPELINE_VERSION" \
+            --timeout 600
+
+      - name: Check release gate
+        id: gate
+        run: |
+          python -m runner.cli gate --config rageval.yaml --fail-on-regression
+
+      - name: Generate evaluation report
+        if: always()
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python -m runner.cli report \
+            --config rageval.yaml \
+            --format json \
+            --output eval-report.json \
+            --diff
+
+      - name: Upload evaluation report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ github.sha }}
+          path: eval-report.json
+          retention-days: 90
+
+      - name: Post results as PR comment
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let body = '## RAG Evaluation Results\n\n';
+
+            try {
+              const report = JSON.parse(fs.readFileSync('eval-report.json', 'utf8'));
+              const summary = report.summary || {};
+              const gate = report.gate || {};
+              const diff = report.diff || {};
+              const run = report.run || {};
+
+              body += `**Run ID**: \`${run.id || 'N/A'}\`  \n`;
+              body += `**Commit**: \`${run.git_commit_sha || context.sha}\`  \n`;
+              body += `**Branch**: \`${run.git_branch || context.ref}\`\n\n`;
+
+              // Metrics table
+              body += '### Metrics\n\n';
+              body += '| Metric | Score | Threshold | Status |\n';
+              body += '|--------|-------|-----------|--------|\n';
+
+              const thresholds = run.gate_threshold_snapshot || {};
+              const metricRows = [
+                ['Faithfulness', 'avg_faithfulness', 'faithfulness'],
+                ['Answer Relevancy', 'avg_answer_relevancy', 'answer_relevancy'],
+                ['Context Precision', 'avg_context_precision', 'context_precision'],
+                ['Context Recall', 'avg_context_recall', 'context_recall'],
+                ['Pass Rate', 'pass_rate', 'pass_rate'],
+              ];
+              for (const [label, summaryKey, threshKey] of metricRows) {
+                const value = summary[summaryKey];
+                const threshold = thresholds[threshKey] || 0.7;
+                if (value !== null && value !== undefined) {
+                  const status = value >= threshold ? '✅ PASS' : '❌ FAIL';
+                  body += `| ${label} | ${value.toFixed(3)} | ${threshold.toFixed(2)} | ${status} |\n`;
+                }
+              }
+
+              // Gate status
+              const gateStatus = gate.passed === true ? '✅ **APPROVED**' : '❌ **BLOCKED**';
+              body += `\n### Release Gate: ${gateStatus}\n`;
+
+              // Regressions
+              const regressions = diff.regressions || [];
+              if (regressions.length > 0) {
+                body += `\n### ⚠️ ${regressions.length} Regression(s) Detected\n\n`;
+                body += '| Query | Failure Reason |\n|-------|----------------|\n';
+                for (const reg of regressions.slice(0, 10)) {
+                  const q = (reg.query || '').slice(0, 60).replace(/\|/g, '\\|');
+                  const r = (reg.failure_reason || 'metric threshold breach').slice(0, 80).replace(/\|/g, '\\|');
+                  body += `| ${q} | ${r} |\n`;
+                }
+                if (regressions.length > 10) {
+                  body += `\n_...and ${regressions.length - 10} more_\n`;
+                }
+              }
+            } catch (e) {
+              body += `_Could not parse evaluation report: ${e.message}_\n`;
+            }
+
+            body += '\n---\n_Generated by RAG Eval Harness_';
+
+            // Find and update existing comment, or create new
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('RAG Evaluation Results')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

@@ -1,0 +1,47 @@
+# rageval.yaml
+# Copy this file to rageval.yaml in your project root and fill in your settings.
+# This file is read by the `rageval` CLI when running evaluations.
+
+# ── Your Pipeline Adapter ────────────────────────────────────────────────────
+# Point to a Python class that subclasses runner.adapters.base.RAGAdapter.
+# The harness calls setup() once, then run(query, context) for each test case.
+adapter:
+  module: my_rag_app.pipeline          # Python import path to your module
+  class: MyRAGPipeline                  # Class implementing RAGAdapter
+  config:
+    # Arbitrary kwargs passed to MyRAGPipeline.__init__(**config)
+    index_url: "http://localhost:6333"
+    collection: "docs_v2"
+    model: "gpt-4o"
+
+# ── Which Test Set to Run Against ────────────────────────────────────────────
+test_set:
+  id: "550e8400-e29b-41d4-a716-446655440000"  # UUID of your test set
+  # OR: name: "My Test Set"  (resolved via API if id is not set)
+
+# ── Metric Thresholds ────────────────────────────────────────────────────────
+# Override defaults. Values are 0.0–1.0. Gate blocks if any metric is below threshold.
+thresholds:
+  faithfulness: 0.75
+  answer_relevancy: 0.70
+  context_precision: 0.65
+  context_recall: 0.60
+  pass_rate: 0.90     # 90% of test cases must pass overall
+
+# ── Which Metrics to Run ─────────────────────────────────────────────────────
+metrics:
+  - faithfulness          # Ragas: is the answer grounded in context?
+  - answer_relevancy      # Ragas: does the answer address the question?
+  - context_precision     # Ragas: is retrieved context relevant?
+  - context_recall        # Ragas: does context cover the ground truth?
+  - rule_evaluation       # Always runs failure_rules from test cases
+
+# ── API Connection ───────────────────────────────────────────────────────────
+api:
+  url: "http://localhost:8000"   # URL of your deployed rageval backend
+  # api_key: "optional-key"     # Optional bearer token
+
+# ── Custom Metric Plugins (optional) ─────────────────────────────────────────
+# plugins:
+#   - module: my_rag_app.custom_metrics
+#     class: DrugDosageHallucinationMetric

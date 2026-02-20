@@ -1,0 +1,35 @@
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+alembic==1.14.0
+
+# Validation / settings
+pydantic==2.10.0
+pydantic-settings==2.6.0
+
+# Task queue
+celery==5.4.0
+redis==5.2.0
+
+# Evaluation libraries
+ragas==0.2.6
+deepeval==1.4.0
+datasets==3.1.0
+
+# LLM SDKs
+openai==1.58.0
+langchain==0.3.0
+langchain-openai==0.2.0
+llama-index==0.11.0
+
+# Utilities
+python-dotenv==1.0.1
+httpx==0.28.0
+pyyaml==6.0.2
+click==8.1.8
