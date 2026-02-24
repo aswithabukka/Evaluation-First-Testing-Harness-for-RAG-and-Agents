@@ -8,52 +8,20 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ReferenceLine,
   ResponsiveContainer,
 } from "recharts";
 import { api } from "@/lib/api";
-import { formatDate } from "@/lib/utils";
 import { Card, CardHeader, CardBody } from "@/components/ui/Card";
 import { PageLoader } from "@/components/ui/LoadingSpinner";
-
-const METRICS = [
-  {
-    key: "faithfulness",
-    label: "Faithfulness",
-    color: "#0ea5e9",
-    threshold: 0.7,
-    description: "Does the answer contain only facts from the retrieved context? High faithfulness means no hallucination — the model sticks to what was retrieved.",
-  },
-  {
-    key: "answer_relevancy",
-    label: "Answer Relevancy",
-    color: "#8b5cf6",
-    threshold: 0.7,
-    description: "Is the answer on-topic and directly responsive to the question? Low scores mean the model answered something adjacent rather than what was asked.",
-  },
-  {
-    key: "context_precision",
-    label: "Context Precision",
-    color: "#f59e0b",
-    threshold: 0.6,
-    description: "Are the retrieved chunks actually useful for answering the question? High precision means retrieval is targeted — few irrelevant chunks are pulled in.",
-  },
-  {
-    key: "context_recall",
-    label: "Context Recall",
-    color: "#10b981",
-    threshold: 0.6,
-    description: "Did retrieval surface all the chunks needed to answer the question fully? Low recall means key facts were missed and the answer may be incomplete.",
-  },
-  {
-    key: "pass_rate",
-    label: "Pass Rate",
-    color: "#ef4444",
-    threshold: 0.8,
-    description: "Percentage of test cases where all metric thresholds and failure rules were satisfied. This is your overall pipeline quality gate.",
-  },
-];
+import {
+  getMetricsForSystemType,
+  SYSTEM_TYPE_LABELS,
+  SYSTEM_TYPE_ICONS,
+  SYSTEM_TYPE_COLORS,
+  type MetricConfig,
+} from "@/lib/system-metrics";
+import type { SystemType } from "@/types";
 
 const DAYS_OPTIONS = [7, 30, 90];
 
@@ -79,7 +47,7 @@ function MetricChart({
     () => api.metrics.trends(testSetId, metric, days)
   );
 
-  if (isLoading) return <div className="h-48 flex items-center justify-center text-gray-300 text-sm">Loading…</div>;
+  if (isLoading) return <div className="h-48 flex items-center justify-center text-gray-300 text-sm">Loading...</div>;
 
   const chartData = (data ?? []).map((p) => ({
     date: new Date(p.recorded_at).toLocaleDateString(),
@@ -110,7 +78,7 @@ function MetricChart({
                     : "bg-red-50 text-red-600 ring-1 ring-red-200"
                 }`}
               >
-                {passing ? "▲ Passing" : "▼ Failing"}
+                {passing ? "Passing" : "Failing"}
               </span>
               <p className={`text-lg font-bold leading-none ${passing ? "text-green-600" : "text-red-500"}`}>
                 {(latest * 100).toFixed(1)}%
@@ -120,7 +88,6 @@ function MetricChart({
         </div>
       </CardHeader>
       <CardBody>
-        {/* Description callout */}
         <div className="flex gap-2 mb-4 p-3 rounded-md bg-gray-50 border border-gray-100">
           <svg
             className="flex-shrink-0 w-4 h-4 mt-0.5 text-gray-400"
@@ -148,7 +115,7 @@ function MetricChart({
               <YAxis domain={[0, 1]} tick={{ fontSize: 10 }} />
               <Tooltip
                 formatter={(value: number) => [`${(value * 100).toFixed(1)}%`, label]}
-                labelFormatter={(label) => `Date: ${label}`}
+                labelFormatter={(l) => `Date: ${l}`}
               />
               <ReferenceLine
                 y={threshold}
@@ -181,6 +148,9 @@ export default function MetricsPage() {
   if (isLoading) return <PageLoader />;
 
   const activeTestSetId = selectedTestSet ?? testSets?.[0]?.id ?? null;
+  const activeTestSet = testSets?.find((ts) => ts.id === activeTestSetId);
+  const systemType = (activeTestSet?.system_type ?? "rag") as SystemType;
+  const metrics = getMetricsForSystemType(systemType);
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
@@ -190,14 +160,16 @@ export default function MetricsPage() {
           <p className="text-sm text-gray-500 mt-0.5">Quality over time across evaluation runs</p>
         </div>
         <div className="flex items-center gap-3">
-          {testSets && testSets.length > 1 && (
+          {testSets && testSets.length > 0 && (
             <select
               value={activeTestSetId ?? ""}
               onChange={(e) => setSelectedTestSet(e.target.value)}
               className="border border-gray-300 rounded-md px-3 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500"
             >
               {testSets.map((ts) => (
-                <option key={ts.id} value={ts.id}>{ts.name}</option>
+                <option key={ts.id} value={ts.id}>
+                  {SYSTEM_TYPE_ICONS[(ts.system_type ?? "rag") as SystemType]} {ts.name}
+                </option>
               ))}
             </select>
           )}
@@ -219,6 +191,19 @@ export default function MetricsPage() {
         </div>
       </div>
 
+      {/* System type indicator */}
+      {activeTestSet && (
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border ${SYSTEM_TYPE_COLORS[systemType]}`}>
+            <span>{SYSTEM_TYPE_ICONS[systemType]}</span>
+            {SYSTEM_TYPE_LABELS[systemType]}
+          </span>
+          <span className="text-xs text-gray-400">
+            Showing {metrics.length} metrics for this system type
+          </span>
+        </div>
+      )}
+
       {!activeTestSetId ? (
         <Card>
           <CardBody>
@@ -227,7 +212,7 @@ export default function MetricsPage() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {METRICS.map((m) => (
+          {metrics.map((m) => (
             <MetricChart
               key={m.key}
               testSetId={activeTestSetId}

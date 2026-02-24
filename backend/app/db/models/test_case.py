@@ -32,6 +32,12 @@ class TestCase(Base):
     failure_rules: Mapped[list | None] = mapped_column(JSONB, nullable=True, default=list)
     # Tags for filtering, e.g. ["safety", "dosage", "refusal"]
     tags: Mapped[list | None] = mapped_column(JSONB, nullable=True, default=list)
+    # Classification: expected labels, e.g. ["spam", "phishing"]
+    expected_labels: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Search/Retrieval: expected ranked result IDs for NDCG/MRR
+    expected_ranking: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Chatbot: multi-turn conversation turns
+    conversation_turns: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

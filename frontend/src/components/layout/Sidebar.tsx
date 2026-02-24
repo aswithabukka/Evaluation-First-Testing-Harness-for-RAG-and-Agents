@@ -5,9 +5,12 @@ import { cn } from "@/lib/utils";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: "▦" },
+  { href: "/systems", label: "AI Systems", icon: "◉" },
+  { href: "/playground", label: "Playground", icon: "⧉" },
   { href: "/test-sets", label: "Test Sets", icon: "⊞" },
   { href: "/runs", label: "Eval Runs", icon: "▶" },
   { href: "/metrics", label: "Metrics", icon: "↗" },
+  { href: "/production", label: "Production", icon: "⚡" },
 ];
 
 export function Sidebar() {

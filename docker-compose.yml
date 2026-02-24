@@ -14,9 +14,18 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - PYTHONPATH=/app
       - DEBUG=true
+      # Production features
+      - API_KEYS=${API_KEYS:-}
+      - SAMPLING_RATE=${SAMPLING_RATE:-0.2}
+      - SAMPLING_ERROR_RATE=${SAMPLING_ERROR_RATE:-1.0}
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
     volumes:
       - ./backend:/app
+      - ./runner:/app/runner
     depends_on:
       db:
         condition: service_healthy
@@ -36,6 +45,11 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - PYTHONPATH=/app
+      # Production features
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+      - SAMPLING_RATE=${SAMPLING_RATE:-0.2}
+      - SAMPLING_ERROR_RATE=${SAMPLING_ERROR_RATE:-1.0}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
     volumes:
       - ./backend:/app
       - ./runner:/app/runner
@@ -45,6 +59,28 @@ services:
       redis:
         condition: service_started
     command: celery -A app.workers.celery_app worker -l info -Q evaluations -c 4
+
+  # Celery Beat scheduler for periodic tasks (hourly sampled traffic evaluation)
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/rageval
+      - SYNC_DATABASE_URL=postgresql://postgres:postgres@db:5432/rageval
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - PYTHONPATH=/app
+      - SAMPLING_RATE=${SAMPLING_RATE:-0.2}
+      - SAMPLING_ERROR_RATE=${SAMPLING_ERROR_RATE:-1.0}
+    volumes:
+      - ./backend:/app
+      - ./runner:/app/runner
+    depends_on:
+      - redis
+      - worker
+    command: celery -A app.workers.celery_app beat -l info
 
   db:
     image: postgres:15-alpine
@@ -77,6 +113,8 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - NEXT_PUBLIC_API_KEY=${API_KEYS:-}
+      - HOSTNAME=0.0.0.0
     depends_on:
       - api
 

@@ -4,6 +4,8 @@ import { api } from "@/lib/api";
 import { formatPercent } from "@/lib/utils";
 import { Card, CardBody } from "@/components/ui/Card";
 import { PageLoader } from "@/components/ui/LoadingSpinner";
+import { SYSTEM_TYPE_LABELS } from "@/lib/system-metrics";
+import type { SystemType } from "@/types";
 
 interface StatCardProps {
   label: string;
@@ -30,11 +32,14 @@ function StatCard({ label, value, sub, accent = "neutral" }: StatCardProps) {
 }
 
 export function SummaryCards() {
-  const { data: runs, isLoading } = useSWR("runs-recent", () =>
+  const { data: runs, isLoading: runsLoading } = useSWR("runs-recent", () =>
     api.runs.list({ limit: 50 })
   );
+  const { data: testSets, isLoading: tsLoading } = useSWR("test-sets-dashboard", () =>
+    api.testSets.list()
+  );
 
-  if (isLoading) return <PageLoader />;
+  if (runsLoading || tsLoading) return <PageLoader />;
   if (!runs) return null;
 
   const completed = runs.filter((r) => r.status === "completed" || r.status === "gate_blocked");
@@ -48,6 +53,16 @@ export function SummaryCards() {
     completed.length > 0
       ? completed.reduce((s, r) => s + (r.summary_metrics?.pass_rate ?? 0), 0) / completed.length
       : null;
+
+  // Count unique system types
+  const systemTypeCounts = new Map<string, number>();
+  (testSets ?? []).forEach((ts) => {
+    const st = ts.system_type ?? "rag";
+    systemTypeCounts.set(st, (systemTypeCounts.get(st) ?? 0) + 1);
+  });
+  const systemTypeSub = Array.from(systemTypeCounts.entries())
+    .map(([st, count]) => `${count} ${SYSTEM_TYPE_LABELS[st as SystemType] ?? st}`)
+    .join(", ");
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -70,8 +85,8 @@ export function SummaryCards() {
       />
       <StatCard
         label="Test Sets"
-        value="—"
-        sub="See Test Sets tab"
+        value={String(testSets?.length ?? 0)}
+        sub={systemTypeSub || "No test sets yet"}
       />
     </div>
   );

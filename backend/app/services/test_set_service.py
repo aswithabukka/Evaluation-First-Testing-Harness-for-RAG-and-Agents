@@ -16,7 +16,7 @@ class TestSetService:
         self.db = db
 
     async def create(self, payload: TestSetCreate) -> TestSetResponse:
-        ts = TestSet(name=payload.name, description=payload.description)
+        ts = TestSet(name=payload.name, description=payload.description, system_type=payload.system_type)
         self.db.add(ts)
         await self.db.flush()
         await self.db.refresh(ts)
@@ -39,6 +39,8 @@ class TestSetService:
             ts.name = payload.name
         if payload.description is not None:
             ts.description = payload.description
+        if payload.system_type is not None:
+            ts.system_type = payload.system_type
         await self.db.flush()
         await self.db.refresh(ts)
         return await self._enrich(ts)
@@ -111,6 +113,7 @@ class TestSetService:
             id=ts.id,
             name=ts.name,
             description=ts.description,
+            system_type=ts.system_type or "rag",
             version=ts.version,
             created_at=ts.created_at,
             updated_at=ts.updated_at,

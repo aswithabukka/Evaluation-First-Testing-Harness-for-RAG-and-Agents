@@ -34,5 +34,20 @@ class Settings(BaseSettings):
     # GitHub
     GITHUB_TOKEN: str = ""
 
+    # ── Production features ──────────────────────────────────────────────
+    # API key authentication (comma-separated list of valid keys; empty = auth disabled)
+    API_KEYS: str = ""
+
+    # Production traffic sampling
+    SAMPLING_RATE: float = 0.2  # Default: sample 20% of normal traffic
+    SAMPLING_ERROR_RATE: float = 1.0  # Default: sample 100% of errors/low-confidence
+
+    # Alerting
+    ALERT_WEBHOOK_URL: str = ""  # Slack/Teams/generic webhook for threshold alerts
+    ALERT_EMAIL: str = ""  # Email address for alerts (future)
+
+    # CORS (production override)
+    CORS_ORIGINS: str = "*"  # Comma-separated origins, e.g. "https://app.example.com,https://admin.example.com"
+
 
 settings = Settings()

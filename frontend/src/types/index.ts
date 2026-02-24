@@ -1,7 +1,19 @@
+export type SystemType =
+  | "rag"
+  | "agent"
+  | "chatbot"
+  | "code_gen"
+  | "search"
+  | "classification"
+  | "summarization"
+  | "translation"
+  | "custom";
+
 export interface TestSet {
   id: string;
   name: string;
   description: string | null;
+  system_type: SystemType;
   version: string;
   created_at: string;
   updated_at: string;
@@ -27,6 +39,9 @@ export interface TestCase {
   context: string[] | null;
   failure_rules: FailureRule[] | null;
   tags: string[] | null;
+  expected_labels: string[] | null;
+  expected_ranking: string[] | null;
+  conversation_turns: Array<Record<string, unknown>> | null;
   created_at: string;
 }
 
@@ -41,6 +56,7 @@ export interface SummaryMetrics {
   avg_answer_relevancy: number | null;
   avg_context_precision: number | null;
   avg_context_recall: number | null;
+  [key: string]: number | null | undefined;
 }
 
 export interface EvaluationRun {
@@ -81,6 +97,9 @@ export interface EvaluationResult {
   raw_contexts: string[] | null;
   tool_calls: Array<{ tool: string; args: Record<string, unknown>; result: unknown }> | null;
   duration_ms: number | null;
+  eval_cost_usd: number | null;
+  tokens_used: number | null;
+  extended_metrics: Record<string, number | string | boolean | null> | null;
   evaluated_at: string;
 }
 
@@ -136,4 +155,62 @@ export interface GateDecision {
     test_case_id: string;
     rules_detail: unknown;
   }>;
+}
+
+// Production traffic types
+export type IngestionStatus = "received" | "sampled" | "skipped" | "evaluated";
+
+export interface ProductionLog {
+  id: string;
+  source: string;
+  query: string;
+  answer: string;
+  is_error: boolean;
+  status: IngestionStatus;
+  confidence_score: number | null;
+  user_feedback: string | null;
+  ingested_at: string;
+  sampled_into_test_set_id: string | null;
+  evaluation_run_id: string | null;
+}
+
+export interface IngestResponse {
+  ingested: number;
+  sampled: number;
+  skipped: number;
+}
+
+export interface SamplingStats {
+  source: string;
+  total_received: number;
+  total_sampled: number;
+  total_skipped: number;
+  total_evaluated: number;
+  sampling_rate: number;
+  error_sampling_rate: number;
+}
+
+// Playground types
+export interface PlaygroundSystem {
+  system_type: string;
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  sample_queries: string[];
+}
+
+export interface PlaygroundToolCall {
+  tool: string;
+  args: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+}
+
+export interface PlaygroundInteraction {
+  answer: string;
+  retrieved_contexts: string[];
+  tool_calls: PlaygroundToolCall[];
+  turn_history: Array<{ role: string; content: string }>;
+  metadata: Record<string, unknown>;
+  session_id: string | null;
 }

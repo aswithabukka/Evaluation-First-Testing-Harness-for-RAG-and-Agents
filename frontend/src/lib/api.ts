@@ -2,15 +2,23 @@ import type {
   EvaluationResult,
   EvaluationRun,
   GateDecision,
+  IngestResponse,
   MetricTrendPoint,
+  PlaygroundInteraction,
+  PlaygroundSystem,
+  ProductionLog,
   RegressionDiff,
   ResultSummary,
+  SamplingStats,
+  SystemType,
   TestCase,
   TestSet,
 } from "@/types";
 
 const BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
 
 class ApiError extends Error {
   constructor(
@@ -22,8 +30,12 @@ class ApiError extends Error {
 }
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(API_KEY ? { "X-API-Key": API_KEY } : {}),
+  };
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers,
     ...options,
   });
   if (!res.ok) {
@@ -48,12 +60,12 @@ export const api = {
     list: (skip = 0, limit = 50) =>
       apiFetch<TestSet[]>(`/test-sets${qs({ skip, limit })}`),
     get: (id: string) => apiFetch<TestSet>(`/test-sets/${id}`),
-    create: (data: { name: string; description?: string }) =>
+    create: (data: { name: string; description?: string; system_type?: SystemType }) =>
       apiFetch<TestSet>("/test-sets", {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    update: (id: string, data: { name?: string; description?: string }) =>
+    update: (id: string, data: { name?: string; description?: string; system_type?: SystemType }) =>
       apiFetch<TestSet>(`/test-sets/${id}`, {
         method: "PUT",
         body: JSON.stringify(data),
@@ -139,5 +151,59 @@ export const api = {
       apiFetch<Record<string, number>>(`/metrics/thresholds/${testSetId}`),
     gate: (runId: string) =>
       apiFetch<GateDecision>(`/metrics/gate/${runId}`),
+  },
+
+  // Playground — interactive demo
+  playground: {
+    systems: () => apiFetch<PlaygroundSystem[]>("/playground/systems"),
+    interact: (data: { system_type: string; query: string; session_id?: string | null }) =>
+      apiFetch<PlaygroundInteraction>("/playground/interact", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    resetSession: (sessionId: string) =>
+      apiFetch<{ message: string; session_id: string }>(
+        `/playground/reset-session${qs({ session_id: sessionId })}`,
+        { method: "POST" },
+      ),
+    uploadDocuments: (texts: string[]) =>
+      apiFetch<{ added: number; total: number }>("/playground/rag/documents", {
+        method: "POST",
+        body: JSON.stringify({ texts }),
+      }),
+    listDocuments: () =>
+      apiFetch<{ documents: string[]; count: number }>("/playground/rag/documents"),
+    clearDocuments: () =>
+      apiFetch<{ removed: number; message: string }>("/playground/rag/documents", {
+        method: "DELETE",
+      }),
+    uploadFiles: async (files: File[]): Promise<{ added: number; total: number }> => {
+      const formData = new FormData();
+      for (const file of files) {
+        formData.append("files", file);
+      }
+      const headers: Record<string, string> = {
+        ...(API_KEY ? { "X-API-Key": API_KEY } : {}),
+      };
+      const res = await fetch(`${BASE_URL}/playground/rag/upload-files`, {
+        method: "POST",
+        headers,
+        body: formData,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new ApiError(res.status, body.detail ?? res.statusText);
+      }
+      return res.json();
+    },
+  },
+
+  // Production traffic ingestion
+  production: {
+    logs: (params?: { source?: string; status?: string; skip?: number; limit?: number }) =>
+      apiFetch<ProductionLog[]>(`/ingest/logs${qs(params)}`),
+    getLog: (id: string) => apiFetch<ProductionLog>(`/ingest/logs/${id}`),
+    stats: (source?: string) =>
+      apiFetch<SamplingStats[]>(`/ingest/stats${qs({ source })}`),
   },
 };

@@ -22,6 +22,7 @@ class EvaluationResultResponse(BaseModel):
     raw_output: str | None
     raw_contexts: list[Any] | None
     tool_calls: list[Any] | None
+    extended_metrics: dict[str, Any] | None
     duration_ms: int | None
     evaluated_at: datetime
 

@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -57,6 +57,9 @@ class EvaluationRun(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Structured pipeline config captured at run time (model, top_k, embedding_model, etc.)
     pipeline_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Cost tracking
+    total_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Relationships
     test_set: Mapped["TestSet"] = relationship(  # noqa: F821

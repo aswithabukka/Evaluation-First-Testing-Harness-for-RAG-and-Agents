@@ -7,7 +7,8 @@ import { formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardBody } from "@/components/ui/Card";
 import { PageLoader } from "@/components/ui/LoadingSpinner";
-import type { RunStatus } from "@/types";
+import { SYSTEM_TYPE_LABELS, SYSTEM_TYPE_COLORS, SYSTEM_TYPE_ICONS } from "@/lib/system-metrics";
+import type { RunStatus, SystemType } from "@/types";
 
 const statusBadge: Record<string, "green" | "red" | "yellow" | "blue" | "orange" | "gray"> = {
   completed: "green",
@@ -60,6 +61,12 @@ export default function TestSetsPage() {
                   <div className="flex items-start justify-between gap-2">
                     <h3 className="font-semibold text-gray-900 truncate">{ts.name}</h3>
                     <span className="text-xs text-gray-400 flex-shrink-0">v{ts.version}</span>
+                  </div>
+                  <div>
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${SYSTEM_TYPE_COLORS[ts.system_type as SystemType] ?? SYSTEM_TYPE_COLORS.custom}`}>
+                      <span>{SYSTEM_TYPE_ICONS[ts.system_type as SystemType] ?? "⚙️"}</span>
+                      {SYSTEM_TYPE_LABELS[ts.system_type as SystemType] ?? ts.system_type}
+                    </span>
                   </div>
                   {ts.description && (
                     <p className="text-xs text-gray-500 line-clamp-2">{ts.description}</p>

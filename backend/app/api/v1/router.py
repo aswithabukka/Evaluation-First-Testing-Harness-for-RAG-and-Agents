@@ -4,7 +4,9 @@ from app.api.v1.endpoints import (
     evaluation_results,
     evaluation_runs,
     health,
+    ingestion,
     metrics,
+    playground,
     test_cases,
     test_sets,
 )
@@ -17,3 +19,5 @@ api_router.include_router(test_cases.router, prefix="/test-sets", tags=["Test Ca
 api_router.include_router(evaluation_runs.router, prefix="/runs", tags=["Evaluation Runs"])
 api_router.include_router(evaluation_results.router, prefix="/results", tags=["Results"])
 api_router.include_router(metrics.router, prefix="/metrics", tags=["Metrics"])
+api_router.include_router(ingestion.router, prefix="/ingest", tags=["Production Ingestion"])
+api_router.include_router(playground.router, prefix="/playground", tags=["Playground"])

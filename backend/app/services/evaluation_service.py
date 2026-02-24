@@ -14,17 +14,51 @@ from app.db.models.test_case import TestCase
 from app.db.models.test_set import TestSet
 
 
+# Default adapter for each system type — used when pipeline_config is
+# not explicitly provided (e.g. browser-triggered runs).
+DEFAULT_ADAPTERS = {
+    "rag":      {"adapter_module": "runner.adapters.demo_rag",        "adapter_class": "DemoRAGAdapter"},
+    "agent":    {"adapter_module": "runner.adapters.demo_tool_agent", "adapter_class": "DemoToolAgentAdapter"},
+    "chatbot":  {"adapter_module": "runner.adapters.demo_chatbot",    "adapter_class": "DemoChatbotAdapter"},
+    "search":   {"adapter_module": "runner.adapters.demo_search",     "adapter_class": "DemoSearchAdapter"},
+}
+
+# Default metrics per system type — used when the caller sends the
+# generic RAG defaults (e.g. browser-triggered runs that don't know
+# which metrics to request).
+_RAG_METRICS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall", "rule_evaluation"]
+DEFAULT_METRICS = {
+    "rag":     _RAG_METRICS,
+    "agent":   ["tool_call_f1", "tool_call_accuracy", "goal_accuracy", "step_efficiency", "rule_evaluation"],
+    "chatbot": ["coherence", "knowledge_retention", "role_adherence", "response_relevance", "rule_evaluation"],
+    "search":  ["ndcg_at_k", "map_at_k", "mrr", "precision_at_k", "recall_at_k", "rule_evaluation"],
+}
+
+
 class EvaluationService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
     async def create_run(self, payload: EvaluationRunCreate) -> EvaluationRunResponse:
-        # Verify test set exists
+        # Verify test set exists and get system_type
         ts_result = await self.db.execute(
             select(TestSet).where(TestSet.id == payload.test_set_id)
         )
-        if ts_result.scalar_one_or_none() is None:
+        test_set = ts_result.scalar_one_or_none()
+        if test_set is None:
             raise NotFoundError("TestSet", str(payload.test_set_id))
+
+        system_type = test_set.system_type or "rag"
+
+        # Auto-select the correct adapter if no pipeline_config was provided
+        pipeline_config = payload.pipeline_config
+        if not pipeline_config:
+            pipeline_config = DEFAULT_ADAPTERS.get(system_type, DEFAULT_ADAPTERS["rag"]).copy()
+
+        # Auto-select metrics if the caller sent the generic RAG defaults
+        metrics = payload.metrics
+        if metrics == _RAG_METRICS and system_type != "rag":
+            metrics = DEFAULT_METRICS.get(system_type, _RAG_METRICS)
 
         thresholds = payload.thresholds
         threshold_snapshot = {
@@ -45,7 +79,7 @@ class EvaluationService:
             status=RunStatus.PENDING,
             gate_threshold_snapshot=threshold_snapshot,
             notes=payload.notes,
-            pipeline_config=payload.pipeline_config,
+            pipeline_config=pipeline_config,
         )
         self.db.add(run)
         await self.db.flush()
@@ -55,7 +89,7 @@ class EvaluationService:
         try:
             from app.workers.tasks.evaluation_tasks import run_evaluation
             run_evaluation.apply_async(
-                args=[str(run.id), payload.metrics],
+                args=[str(run.id), metrics],
                 queue="evaluations",
             )
         except Exception:

@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cp .env.example .env    # add OPENAI_API_KEY
 make up                 # starts api, worker, db, redis, frontend
 make migrate            # runs Alembic migrations (required on first start)
+make seed               # seeds demo data for all 4 AI systems
 ```
 
 ### Backend development
@@ -27,14 +28,13 @@ make eval-local                                # run an evaluation locally (no D
 ### Frontend development
 ```bash
 make type-check-frontend                       # tsc --noEmit
-cd frontend && npm run dev                     # run Next.js dev server locally
+cd frontend && npm run dev                     # run Next.js dev server locally (port 3001)
 cd frontend && npm run lint
 ```
 
 ### CLI (evaluation runner)
 ```bash
 # Trigger a run and wait for completion
-# Writes the resulting run ID to .rageval_run_id for use by subsequent commands
 python -m runner.cli run \
   --config rageval.yaml \
   --test-set <UUID> \
@@ -46,7 +46,6 @@ python -m runner.cli run \
 
 # Check gate (exits non-zero if blocked or regression detected)
 python -m runner.cli gate --config rageval.yaml --fail-on-regression
-# --run-id <id>  (optional; defaults to reading .rageval_run_id)
 
 # Print report
 python -m runner.cli report --format console
@@ -68,12 +67,30 @@ Celery Worker (backend/app/workers/tasks/evaluation_tasks.py)
     ↓  reads/writes
 PostgreSQL  ←→  Redis (broker: db1, results: db2)
     ↑
-Next.js Dashboard (frontend/, port 3000)  ← polls API via SWR
+Next.js Dashboard (frontend/, port 3000 Docker / 3001 dev)  ← polls API via SWR
 ```
 
 **Run lifecycle:** `PENDING → RUNNING → COMPLETED | GATE_BLOCKED | FAILED`
 
 When `create_run()` is called, a threshold snapshot is stored immutably on the run row — the gate is always evaluated against thresholds at run creation time, not current config.
+
+### System types
+
+The harness supports 9 AI system types via the `SystemType` enum:
+
+| Type | Description | Key Metrics |
+|------|-------------|-------------|
+| `rag` | Retrieval-Augmented Generation | faithfulness, answer_relevancy, context_precision, context_recall |
+| `agent` | Tool-using AI agents | tool_accuracy, goal_completion, faithfulness |
+| `chatbot` | Multi-turn conversational AI | coherence, helpfulness, safety |
+| `search` | Search/information retrieval | ndcg, mrr, map, precision_at_k |
+| `code_gen` | Code generation systems | code_correctness, test_pass_rate |
+| `classification` | Text classification | accuracy, f1_score, precision, recall |
+| `summarization` | Text summarization | rouge_l, bleu, compression_ratio |
+| `translation` | Language translation | bleu, translation_accuracy |
+| `custom` | User-defined systems | configurable |
+
+System type is stored on `test_sets.system_type` and drives metric selection, UI display, and evaluator behavior.
 
 ### Key services
 
@@ -83,11 +100,13 @@ When `create_run()` is called, a threshold snapshot is stored immutably on the r
 | Evaluation Service | `backend/app/services/evaluation_service.py` | Creates run records, dispatches Celery task |
 | Release Gate | `backend/app/services/release_gate_service.py` | Compares `summary_metrics` against `gate_threshold_snapshot`; computes regression diff vs last passing run |
 | Metrics Service | `backend/app/services/metrics_service.py` | Reads from `metrics_history` for trend charts |
+| Ingestion Service | `backend/app/services/ingestion_service.py` | Production traffic ingestion with configurable sampling |
+| Sampling Service | `backend/app/services/sampling_service.py` | Decides which production queries get sampled for evaluation |
 | Celery Task | `backend/app/workers/tasks/evaluation_tasks.py` | Runs Ragas + rule evaluator per case; writes `EvaluationResult` and `MetricsHistory` rows; updates run status |
 
 ### Adapter pattern
 
-Any RAG pipeline plugs in by subclassing `runner/adapters/base.py:RAGAdapter`:
+Any AI pipeline plugs in by subclassing `runner/adapters/base.py:RAGAdapter`:
 
 ```python
 class MyPipeline(RAGAdapter):
@@ -96,9 +115,33 @@ class MyPipeline(RAGAdapter):
     def teardown(self): ...      # called once after the run
 ```
 
-`PipelineOutput` carries `answer`, `retrieved_contexts`, `tool_calls`, and `turn_history` (for multi-turn). The adapter class and config kwargs are loaded dynamically from `rageval.yaml` by `runner/config_loader.py` using `importlib`.
+`PipelineOutput` carries `answer`, `retrieved_contexts`, `tool_calls`, `turn_history`, and `metadata`. The adapter class and config kwargs are loaded dynamically via `importlib` from `pipeline_config` on the evaluation run.
 
-Pre-built adapters: `runner/adapters/langchain_adapter.py`, `runner/adapters/llamaindex_adapter.py`.
+### Demo adapters (4 built-in AI systems)
+
+| Adapter | File | System Type | Description |
+|---------|------|-------------|-------------|
+| `DemoRAGAdapter` | `runner/adapters/demo_rag.py` | `rag` | Embedding-based retrieval over ~30 knowledge chunks + GPT-4o-mini generation. Returns `answer` + `retrieved_contexts` with similarity scores. |
+| `DemoToolAgentAdapter` | `runner/adapters/demo_tool_agent.py` | `agent` | OpenAI function-calling agent with 3 tools: `calculator`, `get_weather`, `unit_converter`. Returns `answer` + `tool_calls` (ToolCall objects) + tool result contexts. |
+| `DemoChatbotAdapter` | `runner/adapters/demo_chatbot.py` | `chatbot` | TechStore customer support chatbot with system prompt, 10-item knowledge base, keyword-based retrieval. Maintains conversation history. Returns `answer` + `turn_history` + `retrieved_contexts`. |
+| `DemoSearchAdapter` | `runner/adapters/demo_search.py` | `search` | Semantic search over 15-document developer knowledge base using OpenAI embeddings + cosine similarity. Returns ranked results with `metadata.scores` and `metadata.ranked_ids`. |
+
+Pre-built framework adapters: `runner/adapters/langchain_adapter.py`, `runner/adapters/llamaindex_adapter.py`.
+
+### Dynamic adapter loading
+
+The Celery worker loads adapters dynamically from `pipeline_config` on the evaluation run:
+
+```python
+# In evaluation_tasks.py _load_adapter():
+config = pipeline_config or {}
+module_path = config.get("adapter_module", "runner.adapters.demo_rag")
+class_name = config.get("adapter_class", "DemoRAGAdapter")
+mod = importlib.import_module(module_path)
+adapter_cls = getattr(mod, class_name)
+# Extra config keys (excluding adapter_module/adapter_class) are passed as kwargs
+return adapter_cls(**init_kwargs)
+```
 
 ### Evaluators
 
@@ -107,9 +150,14 @@ Pre-built adapters: `runner/adapters/langchain_adapter.py`, `runner/adapters/lla
 | `RagasEvaluator` | `runner/evaluators/ragas_evaluator.py` | Runs Ragas metrics (faithfulness, answer_relevancy, context_precision, context_recall) using an LLM judge (OpenAI). Batches test cases. |
 | `RuleEvaluator` | `runner/evaluators/rule_evaluator.py` | Interprets `failure_rules` JSONB per test case (see table below). Returns `{passed, details}` per rule. |
 | `LLMJudgeEvaluator` | `runner/evaluators/llm_judge_evaluator.py` | Uses GPT-4o to score free-form responses against configurable criteria. Returns score (0–1) and reasoning string. |
-| `MultiTurnAgentEvaluator` | `runner/multi_turn/agent_evaluator.py` | Evaluates multi-turn conversations. Returns `AgentEvalResult` with `passed`, `turn_results` (list of `TurnResult`), `goal_completed`, and `failure_reason`. |
-
-`MetricScores` (returned by evaluators): `faithfulness`, `answer_relevancy`, `context_precision`, `context_recall`, `custom` (dict for plugin scores).
+| `MultiTurnAgentEvaluator` | `runner/multi_turn/agent_evaluator.py` | Evaluates multi-turn conversations. Returns `AgentEvalResult` with `passed`, `turn_results`, `goal_completed`, and `failure_reason`. |
+| `CodeEvaluator` | `runner/evaluators/code_evaluator.py` | Evaluates generated code: syntax check, test execution, linting. |
+| `RankingEvaluator` | `runner/evaluators/ranking_evaluator.py` | Computes NDCG, MRR, MAP, precision@k for search/retrieval systems. |
+| `SimilarityEvaluator` | `runner/evaluators/similarity_evaluator.py` | ROUGE-L, BLEU, cosine similarity for summarization/translation. |
+| `ClassificationEvaluator` | `runner/evaluators/classification_evaluator.py` | Accuracy, F1, precision, recall for classification systems. |
+| `ConversationEvaluator` | `runner/evaluators/conversation_evaluator.py` | Coherence, helpfulness, safety scoring for chatbots. |
+| `AgentEvaluator` | `runner/evaluators/agent_evaluator.py` | Tool accuracy, goal completion, efficiency for agent systems. |
+| `TranslationEvaluator` | `runner/evaluators/translation_evaluator.py` | BLEU, translation accuracy metrics. |
 
 ### Failure rule engine
 
@@ -136,15 +184,16 @@ Each rule returns `(passed: bool, reason: str)`. The run-level `rules_passed` is
 
 ### Database schema
 
-Five tables (migration in `backend/alembic/versions/001_initial_schema.py`):
+Tables (migrations in `backend/alembic/versions/`):
 
-- **test_sets** — name, description, version (bumped on every case change)
-- **test_cases** — query, expected_output, ground_truth, `context JSONB`, `failure_rules JSONB`, `tags JSONB`
-- **evaluation_runs** — status enum, git metadata, `gate_threshold_snapshot JSONB` (immutable), `summary_metrics JSONB` (cached aggregates)
-- **evaluation_results** — per-case float scores, `rules_detail JSONB`, raw_output, raw_contexts
+- **test_sets** — name, description, `system_type`, version (bumped on every case change)
+- **test_cases** — query, expected_output, ground_truth, `context JSONB`, `failure_rules JSONB`, `tags JSONB`, `expected_labels JSONB`, `expected_ranking JSONB`, `conversation_turns JSONB`
+- **evaluation_runs** — status enum, git metadata, `gate_threshold_snapshot JSONB` (immutable), `summary_metrics JSONB`, `pipeline_config JSONB`, notes
+- **evaluation_results** — per-case float scores, `rules_detail JSONB`, raw_output, raw_contexts, `tool_calls JSONB`, duration_ms, `eval_cost_usd`, `tokens_used`, `extended_metrics JSONB`
 - **metrics_history** — append-only; indexed on `(test_set_id, metric_name, recorded_at)` for trend queries
+- **production_logs** — source, query, answer, status (received/sampled/skipped/evaluated), confidence_score, user_feedback
 
-`metrics_history` is intentionally separate from `evaluation_results` so trend chart queries don't have to aggregate across result rows.
+Migrations: 001 (initial) → 002 (notes, pipeline_config) → 003 (production_logs) → 004 (system_type, cost tracking, extended test_case fields)
 
 ### Async vs sync
 
@@ -168,11 +217,11 @@ POST /test-sets/{id}/cases/bulk                      ← bulk import
 GET/PUT/DELETE /test-sets/{id}/cases/{cid}
 
 # Evaluation runs
-POST /runs                                           ← 202; accepts pipeline_version, notes, triggered_by, git metadata
+POST /runs                                           ← 202; accepts pipeline_config, pipeline_version, notes, triggered_by, git metadata
 GET  /runs?test_set_id=&status=&git_branch=&git_commit_sha=
 GET  /runs/{id}
 GET  /runs/{id}/status                               ← lightweight CI poller (overall_passed, status only)
-GET  /runs/{id}/diff                                 ← regression diff vs last passing baseline (metric_deltas, regressions, improvements)
+GET  /runs/{id}/diff                                 ← regression diff vs last passing baseline
 POST /runs/{id}/cancel                               ← 202
 
 # Results
@@ -184,7 +233,19 @@ GET  /results/{id}
 GET  /metrics/trends?test_set_id=&metric=&days=
 GET  /metrics/thresholds/{test_set_id}
 PUT  /metrics/thresholds/{test_set_id}
-GET  /metrics/gate/{run_id}                          ← evaluates gate; returns overall_passed, per-metric results, block reason
+GET  /metrics/gate/{run_id}                          ← evaluates gate; returns overall_passed, per-metric results
+
+# Production ingestion
+POST /ingest                                         ← 202; ingest single Q&A pair (API key protected)
+POST /ingest/bulk                                    ← 202; bulk ingest
+GET  /ingest/logs?source=&status=                    ← production log entries
+GET  /ingest/logs/{id}
+GET  /ingest/stats?source=                           ← sampling statistics per source
+
+# Playground (interactive demo)
+GET  /playground/systems                             ← metadata for all 4 demo AI systems
+POST /playground/interact                            ← send query to a demo system, get response
+POST /playground/reset-session?session_id=           ← reset chatbot conversation
 ```
 
 ### Dashboard pages
@@ -192,12 +253,37 @@ GET  /metrics/gate/{run_id}                          ← evaluates gate; returns
 | Route | Content |
 |-------|---------|
 | `/dashboard` | 4 stat cards (Total Runs 24h, Gate Pass Rate, Active Blocks, Test Sets) via `SummaryCards`; `RecentRunsTable` showing last 10 runs (SWR polling every 10s) |
-| `/test-sets` | 3-column grid of test set cards, each showing name, version, description, case count, last run status, and a hover-reveal "Quick Run" button |
-| `/test-sets/[id]` | Cases table with columns: Query, Ground Truth, Tags (blue badges), Rules (count badge), Created, Actions; inline add-case form (green-tinted row); edit/delete per row; `TriggerRunModal` for launching a run with pipeline version, "what changed" notes, and triggered-by fields |
-| `/test-sets/new` | Create form with Name (required) and Description fields |
-| `/runs` | All evaluation runs table: Status badge, Pass Rate, Cases (passed/total), Branch, Commit (7-char SHA), Version, Triggered by, Started; refreshes every 8s |
-| `/runs/[id]` | `MetricGauge` cards per metric (label, %, progress bar); regression diff table with `ScoreRow` (current vs baseline side-by-side); `ResponseDiffPanel` (raw output with coloured diff sections vs baseline); per-case results; auto-refreshes while run is pending/running |
-| `/metrics` | Recharts `LineChart` per metric with threshold `ReferenceLine`; 7/30/90d selector; test-set dropdown when multiple exist; each card shows a colored dot, `▲ Passing` / `▼ Failing` pill badge, bold percentage, and a description callout (light gray bg + ⓘ icon) explaining what the metric measures |
+| `/systems` | AI Systems health dashboard — groups test sets by system_type, shows health badges (Healthy/Degraded/Failing), key metric bars, latest run info, and per-system test set links |
+| `/playground` | **Interactive AI Playground** — tabbed interface to chat with all 4 demo systems (RAG, Agent, Chatbot, Search). Two-column layout: chat area with message bubbles + input bar (left), system-specific detail panel (right). RAG shows retrieved contexts with scores. Agent shows tool calls with args/results. Chatbot shows multi-turn conversation history with "New Chat" reset. Search shows ranked results with relevance score bars. Per-system message persistence across tab switches. Sample query chips for each system. |
+| `/test-sets` | 3-column grid of test set cards with system type badges, case count, last run status, and hover-reveal "Quick Run" button |
+| `/test-sets/[id]` | Cases table with inline add/edit/delete; `TriggerRunModal` for launching runs |
+| `/test-sets/new` | Create form with Name, Description, and System Type fields |
+| `/runs` | All evaluation runs table: Status badge, Pass Rate, Cases, Branch, Commit, Version, Triggered by, Started; refreshes every 8s |
+| `/runs/[id]` | `MetricGauge` cards per metric; regression diff table; `ResponseDiffPanel`; per-case results; auto-refreshes while running |
+| `/metrics` | Recharts `LineChart` per metric with threshold `ReferenceLine`; 7/30/90d selector; test-set dropdown |
+| `/production` | Live view of ingested production Q&A pairs, sampling statistics per source, recent logs table with status/confidence/feedback |
+
+### Playground backend architecture
+
+The playground endpoint (`backend/app/api/v1/endpoints/playground.py`) manages adapter lifecycle:
+
+- **Stateless adapters** (RAG, Agent, Search): Cached as singletons in a module-level dict. `setup()` called once on first request. Thread-safe via `threading.Lock`.
+- **Chatbot adapters**: One instance per `session_id` to maintain conversation history. 30-minute TTL with automatic eviction. Session ID returned in response for subsequent requests.
+- **Execution**: Adapters run synchronously; `run_in_executor` prevents blocking the async event loop.
+- **First request latency**: 2-5s for RAG/Search (embedding corpus). Subsequent requests are fast.
+
+### Seed data
+
+`backend/app/scripts/seed_demo_data.py` creates 4 test sets with 8 test cases each:
+
+| Test Set | System Type | Adapter | Test Cases |
+|----------|-------------|---------|------------|
+| Demo RAG Pipeline | `rag` | `DemoRAGAdapter` | Geography, science, medical, tech, literature, physics, AI, safety/refusal questions |
+| Demo Tool Agent | `agent` | `DemoToolAgentAdapter` | Calculator, weather, unit conversion, no-tool questions with `must_call_tool`/`must_not_call_tool` rules |
+| Demo Chatbot | `chatbot` | `DemoChatbotAdapter` | Product inquiry, returns, order tracking, payment, warranty, shipping, safety guardrail questions |
+| Demo Search Engine | `search` | `DemoSearchAdapter` | Python, JS, Docker, SQL, Git, REST, React, Redis queries with `expected_ranking` doc IDs |
+
+Run with: `docker compose exec api python -m app.scripts.seed_demo_data` or `make seed`
 
 ### GitHub Actions
 
@@ -209,9 +295,9 @@ GET  /metrics/gate/{run_id}                          ← evaluates gate; returns
 5. `python -m runner.cli gate --fail-on-regression` — exits non-zero if gate blocked
 6. `python -m runner.cli report --format json --output eval-report.json --diff`
 7. Upload report as artifact (90-day retention)
-8. Post (or update) a PR comment with a formatted Markdown table showing: run ID, commit, branch, metrics table, gate status, and up to 10 regressions. Uses `GITHUB_TOKEN` to find and update existing comment on re-run.
+8. Post (or update) a PR comment with a formatted Markdown table showing: run ID, commit, branch, metrics table, gate status, and up to 10 regressions.
 
-`.github/workflows/release-gate.yml` — queries `GET /runs?git_commit_sha=<sha>` for `overall_passed`; sets a GitHub commit status (`success` / `failure`) using the GitHub Statuses API.
+`.github/workflows/release-gate.yml` — queries `GET /runs?git_commit_sha=<sha>` for `overall_passed`; sets a GitHub commit status.
 
 ---
 
@@ -219,7 +305,7 @@ GET  /metrics/gate/{run_id}                          ← evaluates gate; returns
 
 | Variable | Required | Default |
 |----------|----------|---------|
-| `OPENAI_API_KEY` | Yes (for Ragas/DeepEval scoring) | — |
+| `OPENAI_API_KEY` | Yes (for Ragas scoring + demo adapters) | — |
 | `DATABASE_URL` | Yes | `postgresql+asyncpg://postgres:postgres@db:5432/rageval` |
 | `SYNC_DATABASE_URL` | Yes | `postgresql://postgres:postgres@db:5432/rageval` |
 | `CELERY_BROKER_URL` | Yes | `redis://redis:6379/1` |
@@ -231,6 +317,11 @@ GET  /metrics/gate/{run_id}                          ← evaluates gate; returns
 | `DEFAULT_CONTEXT_PRECISION_THRESHOLD` | No | `0.6` |
 | `DEFAULT_CONTEXT_RECALL_THRESHOLD` | No | `0.6` |
 | `DEFAULT_PASS_RATE_THRESHOLD` | No | `0.8` |
+| `API_KEYS` | No | — (comma-separated keys for production ingestion endpoint) |
+| `SAMPLING_RATE` | No | `0.2` (20% of production traffic sampled) |
+| `SAMPLING_ERROR_RATE` | No | `1.0` (100% of error traffic sampled) |
+| `ALERT_WEBHOOK_URL` | No | — (webhook for quality alerts) |
+| `CORS_ORIGINS` | No | `*` |
 | `GITHUB_TOKEN` | No | — (required only for PR comment posting in CI) |
 
 ---
@@ -243,39 +334,53 @@ GET  /metrics/gate/{run_id}                          ← evaluates gate; returns
 
 **Custom plugin:** Implement `evaluate(self, output, tool_calls, rule) -> tuple[bool, str]` and reference via `{"type": "custom", "plugin_class": "my_module.MyClass"}` in failure rules.
 
-**New adapter:** Subclass `runner/adapters/base.py:RAGAdapter`, implement `run()`, place in `runner/adapters/`, reference from `rageval.yaml`.
+**New adapter:** Subclass `runner/adapters/base.py:RAGAdapter`, implement `run()`, place in `runner/adapters/`, and specify in `pipeline_config` when triggering a run:
+```json
+{
+  "adapter_module": "runner.adapters.my_adapter",
+  "adapter_class": "MyAdapter",
+  "model": "gpt-4o",
+  "top_k": 5
+}
+```
+
+**New system type:** Add to `SystemType` in `frontend/src/types/index.ts`, add metric/color/icon config to `frontend/src/lib/system-metrics.ts`, add evaluator mapping.
+
+**New dashboard page:** Create `frontend/src/app/<route>/page.tsx` as a `"use client"` component, add nav entry in `frontend/src/components/layout/Sidebar.tsx`.
 
 ---
 
 ## Frontend UI conventions
 
-### Metric cards (`frontend/src/app/metrics/page.tsx`)
+### System type configuration (`frontend/src/lib/system-metrics.ts`)
 
-Each metric is defined in the `METRICS` array with `key`, `label`, `color`, `threshold`, and `description`. The `MetricChart` component renders:
-
-- **Header:** colored dot (matching chart line) + metric name on the left; `▲ Passing` / `▼ Failing` pill badge + bold percentage on the right
-- **Description callout:** light gray `bg-gray-50` box with an `ⓘ` SVG icon and human-readable explanation of what the metric means and what high/low scores imply — always shown above the chart
-- **Chart:** Recharts `LineChart` with a dashed red `ReferenceLine` for the threshold
-
-Metric descriptions:
-
-| Metric | What it measures |
-|--------|-----------------|
-| Faithfulness | Whether the answer uses only facts from retrieved context (no hallucination) |
-| Answer Relevancy | Whether the answer directly addresses the question asked |
-| Context Precision | Whether retrieved chunks are actually useful (targeted retrieval) |
-| Context Recall | Whether retrieval surfaced all chunks needed to answer fully |
-| Pass Rate | % of test cases where all metric thresholds and failure rules passed |
-
-To add a new metric, append an entry to the `METRICS` array in `metrics/page.tsx` and ensure the backend exposes it via `GET /metrics/trends`.
+Central config mapping 9 system types to their metrics, colors, icons, and labels. Key exports:
+- `SYSTEM_TYPE_LABELS`, `SYSTEM_TYPE_COLORS`, `SYSTEM_TYPE_ICONS` — display mappings
+- `getMetricsForSystemType(type)` — returns `MetricConfig[]` with key, label, color, threshold
+- `getResultColumns(type)` — column definitions for results table
+- `getMetricValue(metrics, key)` — extracts metric value from summary
 
 ### Shared UI components (`frontend/src/components/`)
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `Sidebar` | `layout/Sidebar.tsx` | Fixed left nav with logo, links (Dashboard / Test Sets / Eval Runs / Metrics), and `v1.0.0` footer |
+| `Sidebar` | `layout/Sidebar.tsx` | Fixed left nav: Dashboard, AI Systems, Playground, Test Sets, Eval Runs, Metrics, Production |
 | `Badge` | `ui/Badge.tsx` | Color variants: `green`, `red`, `yellow`, `blue`, `orange`, `gray` |
 | `Card`, `CardHeader`, `CardBody` | `ui/Card.tsx` | White rounded card with shadow; header has bottom border |
 | `LoadingSpinner`, `PageLoader` | `ui/LoadingSpinner.tsx` | Inline spinner and full-page centered loader |
 | `SummaryCards` | `dashboard/SummaryCards.tsx` | 4 `StatCard` tiles: Total Runs (24h), Gate Pass Rate, Active Blocks, Test Sets |
 | `RecentRunsTable` | `dashboard/RecentRunsTable.tsx` | Last 10 runs, SWR 10s refresh |
+
+### Design tokens (Tailwind)
+
+- **Brand colors:** `brand-50` (#f0f9ff), `brand-500` (#0ea5e9), `brand-600` (#0284c7), `brand-700` (#0369a1)
+- **System colors:** RAG=blue, Agent=purple, Chatbot=pink, Search=teal, CodeGen=amber, Classification=orange, Summarization=indigo, Translation=emerald
+- **Input styling:** `border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500`
+- **Primary button:** `px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md hover:bg-brand-700 disabled:opacity-50`
+
+### Docker notes
+
+- `docker-compose.yml` mounts `./runner:/app/runner` in the `api`, `worker`, and `beat` containers
+- API container has `PYTHONPATH=/app` so `import runner.adapters...` works
+- Frontend Docker container (port 3000) requires `docker compose up --build frontend` to pick up code changes
+- Frontend dev server (port 3001) hot-reloads automatically

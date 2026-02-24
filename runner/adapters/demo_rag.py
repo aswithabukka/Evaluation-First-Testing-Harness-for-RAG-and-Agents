@@ -133,6 +133,8 @@ class DemoRAGAdapter(RAGAdapter):
         self._corpus_embeddings: Optional[list[list[float]]] = None
         self._client = None
         self._embed_model = "text-embedding-3-small"
+        self._user_docs: list[str] = []
+        self._user_doc_embeddings: list[list[float]] = []
 
     # ------------------------------------------------------------------
     def setup(self) -> None:
@@ -146,6 +148,30 @@ class DemoRAGAdapter(RAGAdapter):
         self._corpus_embeddings = [item.embedding for item in response.data]
 
     # ------------------------------------------------------------------
+    def add_documents(self, texts: list[str]) -> int:
+        """Add user-uploaded documents to the corpus. Returns count added."""
+        if self._client is None:
+            raise RuntimeError("DemoRAGAdapter.setup() must be called before add_documents()")
+        if not texts:
+            return 0
+        response = self._client.embeddings.create(model=self._embed_model, input=texts)
+        for i, text in enumerate(texts):
+            self._user_docs.append(text)
+            self._user_doc_embeddings.append(response.data[i].embedding)
+        return len(texts)
+
+    def get_user_documents(self) -> list[str]:
+        """Return list of user-uploaded document texts."""
+        return list(self._user_docs)
+
+    def clear_user_documents(self) -> int:
+        """Remove all user-uploaded documents. Returns count removed."""
+        count = len(self._user_docs)
+        self._user_docs.clear()
+        self._user_doc_embeddings.clear()
+        return count
+
+    # ------------------------------------------------------------------
     def run(self, query: str, context: dict) -> PipelineOutput:
         if self._client is None or self._corpus_embeddings is None:
             raise RuntimeError("DemoRAGAdapter.setup() must be called before run()")
@@ -157,7 +183,7 @@ class DemoRAGAdapter(RAGAdapter):
         )
         q_vec = q_resp.data[0].embedding
 
-        # 2. Cosine similarity against the corpus
+        # 2. Cosine similarity against corpus + user docs
         import math
         def cosine(a: list[float], b: list[float]) -> float:
             dot = sum(x * y for x, y in zip(a, b))
@@ -165,9 +191,12 @@ class DemoRAGAdapter(RAGAdapter):
             mag_b = math.sqrt(sum(x * x for x in b))
             return dot / (mag_a * mag_b + 1e-9)
 
+        all_embeddings = list(self._corpus_embeddings) + list(self._user_doc_embeddings)
+        all_chunks = list(CORPUS) + list(self._user_docs)
+
         scores = [
             (cosine(q_vec, emb), chunk)
-            for emb, chunk in zip(self._corpus_embeddings, CORPUS)
+            for emb, chunk in zip(all_embeddings, all_chunks)
         ]
         scores.sort(key=lambda t: t[0], reverse=True)
         top_chunks = [chunk for _, chunk in scores[: self.top_k]]
@@ -209,3 +238,5 @@ class DemoRAGAdapter(RAGAdapter):
     def teardown(self) -> None:
         self._client = None
         self._corpus_embeddings = None
+        self._user_docs.clear()
+        self._user_doc_embeddings.clear()

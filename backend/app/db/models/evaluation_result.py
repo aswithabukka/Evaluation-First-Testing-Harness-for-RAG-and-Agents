@@ -51,6 +51,12 @@ class EvaluationResult(Base):
     raw_contexts: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     tool_calls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
+    # Cost tracking
+    eval_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Extended metrics for non-RAG systems (stored as JSONB for flexibility)
+    extended_metrics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     evaluated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

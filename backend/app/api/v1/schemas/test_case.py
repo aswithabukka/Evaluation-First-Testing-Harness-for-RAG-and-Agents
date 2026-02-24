@@ -21,6 +21,12 @@ class TestCaseCreate(BaseModel):
     context: list[str] | None = None
     failure_rules: list[FailureRule] | None = Field(default_factory=list)
     tags: list[str] | None = Field(default_factory=list)
+    # Classification systems
+    expected_labels: list[str] | None = None
+    # Search/retrieval systems
+    expected_ranking: list[str] | None = None
+    # Chatbot multi-turn
+    conversation_turns: list[dict[str, Any]] | None = None
 
 
 class TestCaseBulkCreate(BaseModel):
@@ -34,6 +40,9 @@ class TestCaseUpdate(BaseModel):
     context: list[str] | None = None
     failure_rules: list[FailureRule] | None = None
     tags: list[str] | None = None
+    expected_labels: list[str] | None = None
+    expected_ranking: list[str] | None = None
+    conversation_turns: list[dict[str, Any]] | None = None
 
 
 class TestCaseResponse(BaseModel):
@@ -45,6 +54,9 @@ class TestCaseResponse(BaseModel):
     context: list[Any] | None
     failure_rules: list[Any] | None
     tags: list[Any] | None
+    expected_labels: list[Any] | None = None
+    expected_ranking: list[Any] | None = None
+    conversation_turns: list[Any] | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

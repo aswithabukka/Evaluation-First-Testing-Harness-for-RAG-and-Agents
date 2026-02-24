@@ -10,10 +10,19 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { PageLoader } from "@/components/ui/LoadingSpinner";
 import type { EvaluationRun, TestCase } from "@/types";
 
+/* ─── System-type display config ──────────────────────────────────── */
+const SYSTEM_LABELS: Record<string, { label: string; color: string; defaultVersion: string }> = {
+  rag:      { label: "RAG Pipeline",    color: "bg-blue-100 text-blue-800",   defaultVersion: "demo-rag-v1" },
+  agent:    { label: "Tool Agent",      color: "bg-purple-100 text-purple-800", defaultVersion: "demo-agent-v1" },
+  chatbot:  { label: "Chatbot",         color: "bg-pink-100 text-pink-800",   defaultVersion: "demo-chatbot-v1" },
+  search:   { label: "Search Engine",   color: "bg-teal-100 text-teal-800",   defaultVersion: "demo-search-v1" },
+};
+
 /* ─── Trigger-run modal ─────────────────────────────────────────────── */
-function TriggerRunModal({ testSetId, onClose }: { testSetId: string; onClose: () => void }) {
+function TriggerRunModal({ testSetId, systemType, onClose }: { testSetId: string; systemType: string; onClose: () => void }) {
   const router = useRouter();
-  const [pipelineVersion, setPipelineVersion] = useState("demo-rag-v1");
+  const cfg = SYSTEM_LABELS[systemType] ?? SYSTEM_LABELS.rag;
+  const [pipelineVersion, setPipelineVersion] = useState(cfg.defaultVersion);
   const [triggeredBy, setTriggeredBy] = useState("browser");
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
@@ -51,7 +60,10 @@ function TriggerRunModal({ testSetId, onClose }: { testSetId: string; onClose: (
     >
       <div className="bg-white rounded-xl border border-gray-200 shadow-xl w-full max-w-md mx-4 p-6 space-y-5">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-gray-900">Trigger Evaluation Run</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-gray-900">Trigger Evaluation Run</h2>
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cfg.color}`}>{cfg.label}</span>
+          </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
         </div>
         {error && (
@@ -211,7 +223,7 @@ export default function TestSetDetailPage() {
   return (
     <>
       {showRunModal && (
-        <TriggerRunModal testSetId={id} onClose={() => setShowRunModal(false)} />
+        <TriggerRunModal testSetId={id} systemType={testSet.system_type} onClose={() => setShowRunModal(false)} />
       )}
 
       <div className="p-6 space-y-6 max-w-5xl mx-auto">
