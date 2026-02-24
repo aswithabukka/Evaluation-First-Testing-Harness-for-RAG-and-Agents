@@ -19,6 +19,13 @@ This project treats evaluation as a first-class concern — not an afterthought.
 - **4 AI system types** with specialized evaluators: RAG, Agent, Chatbot, Search
 - **An interactive playground** to chat with each AI system and feed interactions into production monitoring
 - **Production traffic ingestion** with automatic sampling and drift detection
+- **Slack/Webhook alerts** with rich Block Kit formatting for gate failures and run completions
+- **CSV/JSON export** for downloading evaluation results with full test case context
+- **User feedback loop** with thumbs up/down on production logs and playground interactions
+- **LLM-powered test case generation** via OpenAI with system-type-specific prompts
+- **Side-by-side run comparison** for comparing 2–4 runs with metric highlighting
+- **Multi-model comparison** to batch-trigger runs with different model configs and compare results
+- **Dark mode** with one-click toggle and system preference detection
 
 ---
 
@@ -79,15 +86,20 @@ Each system type auto-selects the correct adapter and metrics when you trigger a
 
 ### Backend (FastAPI + Celery + PostgreSQL)
 
-- **REST API** with 20+ endpoints covering test sets, test cases, evaluation runs, results, metrics, ingestion, and playground
+- **REST API** with 25+ endpoints covering test sets, test cases, evaluation runs, results, metrics, ingestion, playground, export, feedback, generation, and multi-model comparison
 - **Async architecture**: FastAPI uses `asyncpg` for non-blocking I/O; Celery workers use sync `psycopg2` to avoid event-loop conflicts
 - **Run lifecycle state machine**: `PENDING → RUNNING → COMPLETED | GATE_BLOCKED | FAILED`
 - **Immutable gate snapshots**: thresholds are frozen at run-creation time so re-evaluating an old run always reflects the policy that was active when it ran
 - **Regression diff endpoint** (`GET /runs/{id}/diff`): computes metric deltas and highlights regressions vs the last passing baseline
 - **Metrics history table**: append-only, indexed by `(test_set_id, metric_name, recorded_at)` — decoupled from result rows for fast trend queries
 - **Production traffic ingestion**: ingest real-world queries/answers via API, with configurable sampling rates (20% normal, 100% errors) to automatically generate test cases
+- **User feedback**: thumbs up/down on production logs with aggregated feedback stats
 - **Playground API**: interactive chat with all 4 AI systems, with automatic background ingestion into production traffic
 - **Auto-adapter selection**: the backend resolves the correct adapter and metrics based on the test set's `system_type` — no manual configuration needed
+- **CSV/JSON export**: download full evaluation results with test case context and extended metrics
+- **LLM test case generation**: async Celery task generates test cases via GPT-4o with system-type-specific prompts
+- **Multi-model comparison**: batch-trigger N runs with different pipeline configs, returns comparison URL
+- **Slack/webhook alerts**: Block Kit formatted alerts on gate failures; optional completion alerts for all runs
 - **Database migrations** with Alembic (versioned migrations included)
 - **Celery beat** for background async evaluation tasks
 
@@ -163,13 +175,16 @@ Two workflows:
 |------|-------------|
 | `/dashboard` | 4 stat cards (Total Runs 24h, Gate Pass Rate, Active Blocks, Test Sets); recent runs table with 10s live refresh |
 | `/systems` | AI Systems health dashboard — cards for each system type showing status, adapter, last run metrics |
-| `/playground` | Interactive 4-tab chat interface for RAG, Agent, Chatbot, Search with real-time detail panels |
+| `/playground` | Interactive 4-tab chat interface for RAG, Agent, Chatbot, Search with real-time detail panels; thumbs up/down feedback buttons |
 | `/test-sets` | Test set grid with case counts, system type badge, version, last run status, and one-click "Run Evaluation" |
-| `/test-sets/[id]` | Cases table with inline add/edit/delete; failure rule badges; trigger-run modal with auto-selected adapter |
-| `/runs` | All evaluation runs, filterable by status/system; auto-refreshes every 8s |
-| `/runs/[id]` | Per-metric gauge cards; regression diff table; per-case results with system-specific metric columns |
+| `/test-sets/[id]` | Cases table with inline add/edit/delete; failure rule badges; trigger-run modal; **Generate Cases** (LLM-powered); **Compare Models** (multi-run) |
+| `/runs` | All evaluation runs, filterable by status/system; auto-refreshes every 8s; **checkbox selection for side-by-side comparison** |
+| `/runs/[id]` | Per-metric gauge cards; regression diff table; per-case results with system-specific metric columns; **Export CSV/JSON** buttons |
+| `/runs/compare` | **Side-by-side comparison** of 2–4 runs: summary cards, metric comparison table (best values highlighted), per-case results |
 | `/metrics` | Recharts trend lines per metric with threshold overlay; 7/30/90-day selector |
-| `/production` | Production traffic logs, sampling stats, drift indicators |
+| `/production` | Production traffic logs, sampling stats, drift indicators; **user feedback summary** (thumbs up/down counts, positive rate) |
+
+**Dark mode**: Toggle via moon/sun icon in the sidebar. Persists to localStorage and detects system preference.
 
 ---
 
@@ -264,7 +279,31 @@ This populates 4 demo test sets (one per system type) with 8 test cases each, in
 2. Switch between tabs: **RAG**, **Agent**, **Chatbot**, **Search**
 3. Type a query or click a sample chip
 4. See the response + system-specific detail panel (contexts, tool calls, conversation turns, ranked results)
-5. Playground interactions are automatically ingested into production traffic for monitoring
+5. Click thumbs up/down on assistant messages to provide feedback
+6. Playground interactions are automatically ingested into production traffic for monitoring
+
+### 5. Generate test cases with AI
+
+1. Open a test set at http://localhost:3000/test-sets/{id}
+2. Click **Generate Cases**
+3. Enter a topic and count → GPT-4o generates structured test cases matching the system type
+
+### 6. Compare runs side by side
+
+1. Open http://localhost:3000/runs
+2. Check 2–4 completed runs using the checkboxes
+3. Click **Compare N Runs** in the floating bar
+4. View summary cards, metric comparison table, and per-case results
+
+### 7. Multi-model comparison
+
+1. Open a test set → click **Compare Models**
+2. Add model configs (e.g., gpt-4o vs gpt-4o-mini)
+3. Click **Start Comparison** → runs are triggered and you're redirected to the comparison page
+
+### 8. Toggle dark mode
+
+Click the moon icon in the sidebar footer. The preference persists across sessions.
 
 ---
 
@@ -375,6 +414,125 @@ Playground interactions are automatically ingested with the source `playground-{
 
 ---
 
+## Slack/Webhook Alerts
+
+Get notified on Slack (or any webhook endpoint) when evaluation runs complete or gate thresholds are breached.
+
+```bash
+# .env
+ALERT_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../xxx
+ALERT_ON_SUCCESS=false   # Set to true to alert on all completions, not just failures
+```
+
+- **Gate failure alerts**: Rich Slack Block Kit message with breached metric details, thresholds, and actual values
+- **Run completion alerts**: Summary of all metrics with pass/fail status (opt-in via `ALERT_ON_SUCCESS`)
+- Works with any webhook endpoint (Slack, Discord, custom)
+
+---
+
+## CSV/JSON Export
+
+Download evaluation results for offline analysis:
+
+1. Open a completed run at `/runs/{id}`
+2. Click **Export CSV** or **Export JSON**
+3. The export includes: test case queries, expected outputs, all metric scores, extended metrics, rule pass/fail, and raw output
+
+The CSV dynamically adds columns for system-specific `extended_metrics` (e.g., tool_call_f1, coherence, ndcg_at_5).
+
+---
+
+## User Feedback Loop
+
+Collect thumbs up/down feedback on production traffic and playground interactions:
+
+### Playground
+- Each assistant message shows thumbs up/down buttons
+- Feedback is stored against the production log created during playground ingestion
+
+### Production Traffic
+- `PATCH /api/v1/ingest/logs/{log_id}/feedback` with `{"feedback": "thumbs_up"}` or `{"feedback": "thumbs_down"}`
+- `GET /api/v1/ingest/feedback-stats` returns aggregated counts and positive rate
+- The Production page shows a feedback summary card with thumbs up/down counts and positive rate percentage
+
+---
+
+## LLM Test Case Generation
+
+Generate test cases automatically using GPT-4o with system-type-aware prompts:
+
+1. Open a test set at `/test-sets/{id}`
+2. Click **Generate Cases**
+3. Enter a topic (e.g., "e-commerce return policies") and count (1–50)
+4. The system generates structured test cases with queries, expected outputs, ground truth, and tags
+
+Each system type gets a specialized prompt:
+- **RAG**: Generates queries with expected contexts and ground truth answers
+- **Agent**: Generates queries with expected tool calls and arguments
+- **Chatbot**: Generates multi-turn conversation scenarios
+- **Search**: Generates queries with expected ranking order
+
+```bash
+# API
+curl -X POST http://localhost:8000/api/v1/test-sets/{id}/generate \
+  -H "Content-Type: application/json" \
+  -d '{"topic": "healthcare FAQ", "count": 10}'
+```
+
+---
+
+## Side-by-Side Run Comparison
+
+Compare 2–4 evaluation runs visually:
+
+1. Go to `/runs`
+2. Check the boxes next to 2–4 completed runs
+3. Click the floating **"Compare N Runs"** bar
+4. The comparison page shows:
+   - **Summary cards** per run with pass rate and key metrics
+   - **Metric comparison table** with best values highlighted in green
+   - **Per-case results table** with all runs' metrics side by side
+
+---
+
+## Multi-Model Comparison
+
+Batch-trigger evaluation runs with different model configurations and compare results:
+
+1. Open a test set at `/test-sets/{id}`
+2. Click **Compare Models**
+3. Add 2–6 model configurations (model name + top_k)
+4. Click **Start Comparison** — creates N runs and redirects to the comparison page
+
+```bash
+# API
+curl -X POST http://localhost:8000/api/v1/runs/multi \
+  -H "Content-Type: application/json" \
+  -d '{
+    "test_set_id": "<TEST_SET_ID>",
+    "configs": [
+      {"model": "gpt-4o", "top_k": 5},
+      {"model": "gpt-4o-mini", "top_k": 5},
+      {"model": "gpt-4o", "top_k": 10}
+    ]
+  }'
+```
+
+Returns `{"run_ids": [...], "compare_url": "/runs/compare?ids=..."}`.
+
+---
+
+## Dark Mode
+
+Toggle dark mode via the moon/sun icon in the sidebar footer.
+
+- Uses Tailwind's `darkMode: "class"` strategy
+- Persists preference to `localStorage`
+- Auto-detects system preference on first visit
+- All pages, cards, badges, and components support dark variants
+
+---
+
 ## Multi-Turn Agent Evaluation
 
 For conversational agents, use `MultiTurnAgentEvaluator` to evaluate across a full conversation history:
@@ -482,10 +640,16 @@ rag-eval-harness/
 │   │   ├── core/                     # Config, exceptions, security
 │   │   ├── db/
 │   │   │   └── models/               # 7 SQLAlchemy ORM models
-│   │   ├── services/                 # 11 business logic services
+│   │   ├── services/                 # 12 business logic services
+│   │   │   ├── alert_service.py      # Slack/webhook alerts (Block Kit)
+│   │   │   ├── generation_service.py # LLM test case generation (OpenAI)
+│   │   │   ├── ingestion_service.py  # Production traffic + feedback stats
+│   │   │   └── ...                   # 9 more services
 │   │   └── workers/
 │   │       ├── celery_app.py
-│   │       └── tasks/                # Celery evaluation tasks
+│   │       └── tasks/
+│   │           ├── evaluation_tasks.py   # Run evaluation + alerts
+│   │           └── generation_tasks.py   # Async LLM test case generation
 │   ├── alembic/                      # Database migrations
 │   ├── requirements.txt
 │   └── Dockerfile
@@ -516,21 +680,23 @@ rag-eval-harness/
 │
 ├── frontend/                         # Next.js 14 dashboard
 │   └── src/
-│       ├── app/                      # 9 pages (App Router)
+│       ├── app/                      # 10 pages (App Router)
 │       │   ├── dashboard/            # Stats + recent runs
 │       │   ├── systems/              # AI system health cards
-│       │   ├── playground/           # Interactive 4-system chat
-│       │   ├── test-sets/            # Test set management
-│       │   ├── runs/                 # Evaluation run list + detail
+│       │   ├── playground/           # Interactive 4-system chat + feedback
+│       │   ├── test-sets/            # Test set management + generate + compare models
+│       │   ├── runs/                 # Run list (with compare selection) + detail (with export)
+│       │   ├── runs/compare/         # Side-by-side run comparison (2–4 runs)
 │       │   ├── metrics/              # Trend charts
-│       │   └── production/           # Production traffic logs
-│       ├── components/               # Reusable UI components
+│       │   └── production/           # Traffic logs + feedback stats
+│       ├── components/               # Reusable UI components (dark mode supported)
 │       │   ├── dashboard/            # SummaryCards, RecentRunsTable
-│       │   ├── layout/               # Sidebar navigation
+│       │   ├── layout/               # Sidebar navigation + dark mode toggle
 │       │   ├── metrics/              # MetricGauge, ChartPanel
 │       │   └── ui/                   # Badge, Card, LoadingSpinner
 │       └── lib/
-│           ├── api.ts                # API client
+│           ├── api.ts                # API client (export, feedback, generation, multi-run)
+│           ├── theme.tsx             # ThemeProvider + useTheme hook (dark mode)
 │           ├── system-metrics.ts     # Per-system metric config
 │           └── utils.ts
 │
