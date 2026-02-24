@@ -126,6 +126,7 @@ function TriggerRunModal({ testSetId, systemType, onClose }: { testSetId: string
 /* ─── Main page ─────────────────────────────────────────────────────── */
 export default function TestSetDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const { mutate } = useSWRConfig();
 
@@ -150,6 +151,21 @@ export default function TestSetDetailPage() {
   useEffect(() => {
     if (searchParams.get("run") === "1") setShowRunModal(true);
   }, [searchParams]);
+
+  // Generate modal state
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [genTopic, setGenTopic] = useState("");
+  const [genCount, setGenCount] = useState(10);
+  const [generating, setGenerating] = useState(false);
+  const [genStatus, setGenStatus] = useState<string | null>(null);
+
+  // Compare models modal state
+  const [showCompareModal, setShowCompareModal] = useState(false);
+  const [modelConfigs, setModelConfigs] = useState<{ model: string; top_k: string }[]>([
+    { model: "gpt-4o", top_k: "5" },
+    { model: "gpt-4o-mini", top_k: "5" },
+  ]);
+  const [comparing, setComparing] = useState(false);
 
   if (!testSet || isLoading) return <PageLoader />;
 
@@ -220,10 +236,192 @@ export default function TestSetDetailPage() {
     }
   }
 
+  async function handleCompareModels() {
+    const configs = modelConfigs
+      .filter((c) => c.model.trim())
+      .map((c) => ({
+        model: c.model.trim(),
+        top_k: parseInt(c.top_k) || 5,
+      }));
+    if (configs.length < 2) return;
+    setComparing(true);
+    try {
+      const result = await api.runs.triggerMulti({
+        test_set_id: id,
+        configs,
+      });
+      router.push(result.compare_url);
+    } catch (e: unknown) {
+      setTableError(e instanceof Error ? e.message : "Failed to trigger multi-run");
+      setComparing(false);
+    }
+  }
+
+  async function handleGenerate() {
+    if (!genTopic.trim()) return;
+    setGenerating(true);
+    setGenStatus(null);
+    try {
+      await api.testSets.generate(id, { topic: genTopic.trim(), count: genCount });
+      setGenStatus(`Generating ${genCount} cases... This may take a moment.`);
+      // Poll for new cases after a delay
+      setTimeout(async () => {
+        await mutate(`test-cases-${id}`);
+        await mutate(`test-set-${id}`);
+        setGenerating(false);
+        setGenStatus(`Done! Generated ${genCount} test cases.`);
+        setTimeout(() => {
+          setShowGenerateModal(false);
+          setGenStatus(null);
+          setGenTopic("");
+        }, 2000);
+      }, 8000);
+    } catch (e: unknown) {
+      setGenStatus(e instanceof Error ? e.message : "Generation failed");
+      setGenerating(false);
+    }
+  }
+
   return (
     <>
       {showRunModal && (
         <TriggerRunModal testSetId={id} systemType={testSet.system_type} onClose={() => setShowRunModal(false)} />
+      )}
+
+      {/* Generate Modal */}
+      {showGenerateModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowGenerateModal(false); }}
+        >
+          <div className="bg-white rounded-xl border border-gray-200 shadow-xl w-full max-w-md mx-4 p-6 space-y-5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-gray-900">Generate Test Cases with AI</h2>
+              <button onClick={() => setShowGenerateModal(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">x</button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Topic / Description</label>
+                <textarea
+                  value={genTopic}
+                  onChange={(e) => setGenTopic(e.target.value)}
+                  placeholder="e.g. Customer support for an e-commerce platform, handling returns and refund policies"
+                  rows={3}
+                  className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Number of cases: <span className="font-mono text-brand-600">{genCount}</span>
+                </label>
+                <input
+                  type="range"
+                  min={1}
+                  max={50}
+                  value={genCount}
+                  onChange={(e) => setGenCount(Number(e.target.value))}
+                  className="w-full accent-brand-600"
+                />
+                <div className="flex justify-between text-xs text-gray-400 mt-0.5">
+                  <span>1</span><span>50</span>
+                </div>
+              </div>
+            </div>
+            {genStatus && (
+              <p className={`text-xs px-3 py-2 rounded ${genStatus.startsWith("Done") ? "bg-green-50 text-green-700 border border-green-200" : genStatus.includes("failed") ? "bg-red-50 text-red-700 border border-red-200" : "bg-blue-50 text-blue-700 border border-blue-200"}`}>
+                {genStatus}
+              </p>
+            )}
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={handleGenerate}
+                disabled={generating || !genTopic.trim()}
+                className="flex-1 bg-brand-600 text-white text-sm font-medium py-2 rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+              >
+                {generating ? "Generating..." : "Generate"}
+              </button>
+              <button
+                onClick={() => setShowGenerateModal(false)}
+                className="flex-1 text-sm font-medium py-2 rounded-md border border-gray-200 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Compare Models Modal */}
+      {showCompareModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowCompareModal(false); }}
+        >
+          <div className="bg-white rounded-xl border border-gray-200 shadow-xl w-full max-w-md mx-4 p-6 space-y-5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-gray-900">Compare Models</h2>
+              <button onClick={() => setShowCompareModal(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">x</button>
+            </div>
+            <p className="text-xs text-gray-500">Add 2-6 model configurations to compare side-by-side on this test set.</p>
+            <div className="space-y-3">
+              {modelConfigs.map((config, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input
+                    value={config.model}
+                    onChange={(e) => {
+                      const next = [...modelConfigs];
+                      next[i] = { ...next[i], model: e.target.value };
+                      setModelConfigs(next);
+                    }}
+                    placeholder="Model name (e.g. gpt-4o)"
+                    className="flex-1 text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  />
+                  <input
+                    value={config.top_k}
+                    onChange={(e) => {
+                      const next = [...modelConfigs];
+                      next[i] = { ...next[i], top_k: e.target.value };
+                      setModelConfigs(next);
+                    }}
+                    placeholder="top_k"
+                    className="w-20 text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  />
+                  {modelConfigs.length > 2 && (
+                    <button
+                      onClick={() => setModelConfigs(modelConfigs.filter((_, j) => j !== i))}
+                      className="text-gray-400 hover:text-red-500 text-sm"
+                    >
+                      x
+                    </button>
+                  )}
+                </div>
+              ))}
+              {modelConfigs.length < 6 && (
+                <button
+                  onClick={() => setModelConfigs([...modelConfigs, { model: "", top_k: "5" }])}
+                  className="text-xs text-brand-600 hover:text-brand-700 font-medium"
+                >
+                  + Add model
+                </button>
+              )}
+            </div>
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={handleCompareModels}
+                disabled={comparing || modelConfigs.filter((c) => c.model.trim()).length < 2}
+                className="flex-1 bg-purple-600 text-white text-sm font-medium py-2 rounded-md hover:bg-purple-700 disabled:opacity-50 transition-colors"
+              >
+                {comparing ? "Starting..." : "Start Comparison"}
+              </button>
+              <button
+                onClick={() => setShowCompareModal(false)}
+                className="flex-1 text-sm font-medium py-2 rounded-md border border-gray-200 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="p-6 space-y-6 max-w-5xl mx-auto">
@@ -240,12 +438,26 @@ export default function TestSetDetailPage() {
               {testSet.test_case_count} cases · v{testSet.version} · Updated {formatDate(testSet.updated_at)}
             </p>
           </div>
-          <button
-            onClick={() => setShowRunModal(true)}
-            className="flex-shrink-0 px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md hover:bg-brand-700 transition-colors"
-          >
-            ▶ Run Evaluation
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              onClick={() => setShowGenerateModal(true)}
+              className="px-4 py-2 text-sm font-medium text-brand-700 bg-brand-50 border border-brand-200 rounded-md hover:bg-brand-100 transition-colors"
+            >
+              Generate Cases
+            </button>
+            <button
+              onClick={() => setShowCompareModal(true)}
+              className="px-4 py-2 text-sm font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-md hover:bg-purple-100 transition-colors"
+            >
+              Compare Models
+            </button>
+            <button
+              onClick={() => setShowRunModal(true)}
+              className="px-4 py-2 bg-brand-600 text-white text-sm font-medium rounded-md hover:bg-brand-700 transition-colors"
+            >
+              Run Evaluation
+            </button>
+          </div>
         </div>
 
         {testSet.description && (

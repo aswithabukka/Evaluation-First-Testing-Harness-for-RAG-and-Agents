@@ -1,7 +1,8 @@
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.schemas.evaluation_result import RegressionDiff
@@ -15,6 +16,12 @@ from app.services.evaluation_service import EvaluationService
 from app.services.release_gate_service import ReleaseGateService
 
 router = APIRouter()
+
+
+class MultiRunRequest(BaseModel):
+    """Trigger multiple evaluation runs with different pipeline configs."""
+    test_set_id: uuid.UUID
+    configs: list[dict[str, Any]] = Field(..., min_length=2, max_length=6)
 
 
 def get_eval_service(db: AsyncSession = Depends(get_db)) -> EvaluationService:
@@ -32,6 +39,28 @@ async def trigger_evaluation_run(
 ):
     """Trigger a new async evaluation run. Returns immediately with run_id."""
     return await service.create_run(payload)
+
+
+@router.post("/multi", status_code=202)
+async def trigger_multi_run(
+    payload: MultiRunRequest,
+    service: Annotated[EvaluationService, Depends(get_eval_service)],
+):
+    """Trigger multiple evaluation runs with different pipeline configs for comparison."""
+    run_ids = []
+    for config in payload.configs:
+        model_name = config.get("model", "unknown")
+        run_data = EvaluationRunCreate(
+            test_set_id=payload.test_set_id,
+            pipeline_version=f"multi-compare/{model_name}",
+            triggered_by="multi-model-compare",
+            pipeline_config=config,
+        )
+        run = await service.create_run(run_data)
+        run_ids.append(str(run.id))
+
+    compare_url = f"/runs/compare?ids={','.join(run_ids)}"
+    return {"run_ids": run_ids, "compare_url": compare_url}
 
 
 @router.get("/", response_model=list[EvaluationRunResponse])

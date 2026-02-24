@@ -73,6 +73,11 @@ export const api = {
     delete: (id: string) =>
       apiFetch<void>(`/test-sets/${id}`, { method: "DELETE" }),
     export: (id: string) => apiFetch<unknown>(`/test-sets/${id}/export`),
+    generate: (id: string, data: { topic: string; count: number }) =>
+      apiFetch<{ task_id: string; test_set_id: string; status: string }>(
+        `/test-sets/${id}/generate`,
+        { method: "POST", body: JSON.stringify(data) },
+      ),
   },
 
   testCases: {
@@ -129,6 +134,11 @@ export const api = {
       }),
     cancel: (id: string) =>
       apiFetch<void>(`/runs/${id}/cancel`, { method: "POST" }),
+    triggerMulti: (data: { test_set_id: string; configs: Record<string, unknown>[] }) =>
+      apiFetch<{ run_ids: string[]; compare_url: string }>("/runs/multi", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
   },
 
   results: {
@@ -140,6 +150,10 @@ export const api = {
     get: (id: string) => apiFetch<EvaluationResult>(`/results/${id}`),
     summary: (runId: string) =>
       apiFetch<ResultSummary>(`/results/summary${qs({ run_id: runId })}`),
+    export: (runId: string, format: "csv" | "json" = "csv") => {
+      const url = `${BASE_URL}/results/export${qs({ run_id: runId, format })}`;
+      window.open(url, "_blank");
+    },
   },
 
   metrics: {
@@ -205,5 +219,14 @@ export const api = {
     getLog: (id: string) => apiFetch<ProductionLog>(`/ingest/logs/${id}`),
     stats: (source?: string) =>
       apiFetch<SamplingStats[]>(`/ingest/stats${qs({ source })}`),
+    updateFeedback: (logId: string, feedback: "thumbs_up" | "thumbs_down") =>
+      apiFetch<ProductionLog>(`/ingest/logs/${logId}/feedback`, {
+        method: "PATCH",
+        body: JSON.stringify({ feedback }),
+      }),
+    feedbackStats: (source?: string) =>
+      apiFetch<{ source: string | null; total: number; thumbs_up: number; thumbs_down: number; no_feedback: number; positive_rate: number | null }>(
+        `/ingest/feedback-stats${qs({ source })}`,
+      ),
   },
 };

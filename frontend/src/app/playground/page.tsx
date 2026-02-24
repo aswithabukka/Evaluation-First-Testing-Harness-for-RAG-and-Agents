@@ -24,7 +24,17 @@ const SYSTEM_ACCENTS: Record<string, { bg: string; text: string; border: string;
 
 /* ─── Chat Message ──────────────────────────────────────────────────── */
 
-function ChatMessage({ msg, accentDot }: { msg: Message; accentDot: string }) {
+function ChatMessage({
+  msg,
+  accentDot,
+  feedback,
+  onFeedback,
+}: {
+  msg: Message;
+  accentDot: string;
+  feedback?: "thumbs_up" | "thumbs_down" | null;
+  onFeedback?: (feedback: "thumbs_up" | "thumbs_down") => void;
+}) {
   const isUser = msg.role === "user";
   return (
     <div className={cn("flex gap-2.5 max-w-[85%]", isUser ? "ml-auto flex-row-reverse" : "mr-auto")}>
@@ -36,15 +46,45 @@ function ChatMessage({ msg, accentDot }: { msg: Message; accentDot: string }) {
       >
         {isUser ? "U" : "AI"}
       </div>
-      <div
-        className={cn(
-          "rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-          isUser
-            ? "bg-brand-600 text-white rounded-tr-md"
-            : "bg-white border border-gray-200 text-gray-800 rounded-tl-md shadow-sm"
+      <div className="flex flex-col">
+        <div
+          className={cn(
+            "rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+            isUser
+              ? "bg-brand-600 text-white rounded-tr-md"
+              : "bg-white border border-gray-200 text-gray-800 rounded-tl-md shadow-sm"
+          )}
+        >
+          <p className="whitespace-pre-wrap">{msg.content}</p>
+        </div>
+        {!isUser && onFeedback && (
+          <div className="flex gap-1 mt-1 ml-1">
+            <button
+              onClick={() => onFeedback("thumbs_up")}
+              className={cn(
+                "px-1.5 py-0.5 rounded text-xs transition-colors",
+                feedback === "thumbs_up"
+                  ? "bg-green-100 text-green-700"
+                  : "text-gray-400 hover:text-green-600 hover:bg-green-50"
+              )}
+              title="Thumbs up"
+            >
+              +
+            </button>
+            <button
+              onClick={() => onFeedback("thumbs_down")}
+              className={cn(
+                "px-1.5 py-0.5 rounded text-xs transition-colors",
+                feedback === "thumbs_down"
+                  ? "bg-red-100 text-red-700"
+                  : "text-gray-400 hover:text-red-600 hover:bg-red-50"
+              )}
+              title="Thumbs down"
+            >
+              -
+            </button>
+          </div>
         )}
-      >
-        <p className="whitespace-pre-wrap">{msg.content}</p>
       </div>
     </div>
   );
@@ -531,6 +571,7 @@ export default function PlaygroundPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, "thumbs_up" | "thumbs_down">>({});
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -673,7 +714,15 @@ export default function PlaygroundPage() {
             )}
 
             {messages.map((msg) => (
-              <ChatMessage key={msg.id} msg={msg} accentDot={accent.dot} />
+              <ChatMessage
+                key={msg.id}
+                msg={msg}
+                accentDot={accent.dot}
+                feedback={feedbackMap[msg.id]}
+                onFeedback={msg.role === "assistant" ? (fb) => {
+                  setFeedbackMap((prev) => ({ ...prev, [msg.id]: fb }));
+                } : undefined}
+              />
             ))}
 
             {loading && <TypingIndicator dotColor={accent.dot} />}

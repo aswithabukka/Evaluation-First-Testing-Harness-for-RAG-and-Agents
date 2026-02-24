@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.schemas.ingestion import (
+    FeedbackStats,
+    FeedbackUpdate,
     IngestResponse,
     ProductionLogBulkIngest,
     ProductionLogIngest,
@@ -88,6 +90,27 @@ async def get_production_log(
 ):
     """Get a specific production log entry."""
     return await service.get_log(log_id)
+
+
+@router.patch("/logs/{log_id}/feedback", response_model=ProductionLogResponse)
+async def update_feedback(
+    log_id: uuid.UUID,
+    payload: FeedbackUpdate,
+    service: Annotated[IngestionService, Depends(get_ingestion_service)],
+    _api_key: str | None = Depends(require_api_key),
+):
+    """Update user feedback (thumbs_up/thumbs_down) on a production log entry."""
+    return await service.update_feedback(log_id, payload.feedback)
+
+
+@router.get("/feedback-stats", response_model=FeedbackStats)
+async def get_feedback_stats(
+    service: Annotated[IngestionService, Depends(get_ingestion_service)],
+    source: str | None = Query(None),
+    _api_key: str | None = Depends(require_api_key),
+):
+    """Get aggregated user feedback statistics."""
+    return await service.get_feedback_stats(source=source)
 
 
 @router.get("/stats", response_model=list[SamplingStats])

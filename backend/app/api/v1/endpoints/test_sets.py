@@ -2,6 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.schemas.test_set import TestSetCreate, TestSetResponse, TestSetUpdate
@@ -9,6 +10,11 @@ from app.db.session import get_db
 from app.services.test_set_service import TestSetService
 
 router = APIRouter()
+
+
+class GenerateRequest(BaseModel):
+    topic: str = Field(..., min_length=1, max_length=500)
+    count: int = Field(10, ge=1, le=50)
 
 
 def get_service(db: AsyncSession = Depends(get_db)) -> TestSetService:
@@ -63,3 +69,15 @@ async def export_test_set(
     service: Annotated[TestSetService, Depends(get_service)],
 ):
     return await service.export(test_set_id)
+
+
+@router.post("/{test_set_id}/generate", status_code=202)
+async def generate_test_cases(
+    test_set_id: uuid.UUID,
+    payload: GenerateRequest,
+):
+    """Generate test cases using an LLM. Returns task_id for polling."""
+    from app.workers.tasks.generation_tasks import generate_test_cases as gen_task
+
+    task = gen_task.delay(str(test_set_id), payload.topic, payload.count)
+    return {"task_id": task.id, "test_set_id": str(test_set_id), "status": "accepted"}

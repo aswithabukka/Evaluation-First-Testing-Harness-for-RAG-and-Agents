@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { api } from "@/lib/api";
 import { Card, CardHeader, CardBody } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
-import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { LoadingSpinner, PageLoader } from "@/components/ui/LoadingSpinner";
 import type { ProductionLog, SamplingStats } from "@/types";
 
 export default function ProductionPage() {
@@ -20,7 +20,13 @@ export default function ProductionPage() {
     { refreshInterval: 10000 }
   );
 
-  if (statsLoading && logsLoading) return <LoadingSpinner fullPage />;
+  const { data: feedbackStats } = useSWR(
+    "feedback-stats",
+    () => api.production.feedbackStats(),
+    { refreshInterval: 15000 }
+  );
+
+  if (statsLoading && logsLoading) return <PageLoader />;
 
   return (
     <div className="p-6 space-y-6">
@@ -30,6 +36,48 @@ export default function ProductionPage() {
           Live view of ingested production Q&A pairs and sampling statistics
         </p>
       </div>
+
+      {/* Feedback Stats Card */}
+      {feedbackStats && feedbackStats.total > 0 && (
+        <Card>
+          <CardHeader>
+            <h2 className="text-sm font-semibold text-gray-900">User Feedback Summary</h2>
+          </CardHeader>
+          <CardBody>
+            <div className="flex items-center gap-8">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">+</span>
+                <div>
+                  <p className="text-2xl font-bold text-green-600">{feedbackStats.thumbs_up}</p>
+                  <p className="text-xs text-gray-500">Thumbs Up</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">-</span>
+                <div>
+                  <p className="text-2xl font-bold text-red-600">{feedbackStats.thumbs_down}</p>
+                  <p className="text-xs text-gray-500">Thumbs Down</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-2xl text-gray-300">?</span>
+                <div>
+                  <p className="text-2xl font-bold text-gray-400">{feedbackStats.no_feedback}</p>
+                  <p className="text-xs text-gray-500">No Feedback</p>
+                </div>
+              </div>
+              {feedbackStats.positive_rate !== null && (
+                <div className="ml-auto text-center">
+                  <p className="text-3xl font-bold text-brand-600">
+                    {(feedbackStats.positive_rate * 100).toFixed(0)}%
+                  </p>
+                  <p className="text-xs text-gray-500">Positive Rate</p>
+                </div>
+              )}
+            </div>
+          </CardBody>
+        </Card>
+      )}
 
       {/* Sampling Stats Cards */}
       {stats && stats.length > 0 && (

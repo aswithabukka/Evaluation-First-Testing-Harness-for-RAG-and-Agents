@@ -61,3 +61,18 @@ class SamplingStats(BaseModel):
     total_evaluated: int
     sampling_rate: float
     error_sampling_rate: float
+
+
+class FeedbackUpdate(BaseModel):
+    """User feedback on a production log entry."""
+    feedback: str = Field(..., pattern=r"^(thumbs_up|thumbs_down)$")
+
+
+class FeedbackStats(BaseModel):
+    """Aggregated feedback statistics."""
+    source: str | None
+    total: int
+    thumbs_up: int
+    thumbs_down: int
+    no_feedback: int
+    positive_rate: float | None

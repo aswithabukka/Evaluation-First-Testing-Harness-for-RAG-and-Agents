@@ -317,6 +317,22 @@ export default function RunDetailPage() {
             <span>{SYSTEM_TYPE_ICONS[systemType]}</span>
             {SYSTEM_TYPE_LABELS[systemType]}
           </span>
+          {(run.status === "completed" || run.status === "gate_blocked") && (
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={() => api.results.export(id, "csv")}
+                className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Export CSV
+              </button>
+              <button
+                onClick={() => api.results.export(id, "json")}
+                className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Export JSON
+              </button>
+            </div>
+          )}
         </div>
         <p className="text-sm text-gray-500 mt-0.5">
           <span className="font-medium text-gray-700">{pipelineVersionDisplay}</span>

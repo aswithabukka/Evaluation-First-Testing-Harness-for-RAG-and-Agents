@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # Alerting
     ALERT_WEBHOOK_URL: str = ""  # Slack/Teams/generic webhook for threshold alerts
     ALERT_EMAIL: str = ""  # Email address for alerts (future)
+    ALERT_ON_SUCCESS: bool = False  # Send webhook for all completed runs (not just failures)
 
     # CORS (production override)
     CORS_ORIGINS: str = "*"  # Comma-separated origins, e.g. "https://app.example.com,https://admin.example.com"

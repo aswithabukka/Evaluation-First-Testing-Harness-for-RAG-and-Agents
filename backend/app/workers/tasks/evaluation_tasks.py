@@ -252,12 +252,14 @@ def run_evaluation(self, run_id: str, metrics: list[str]) -> dict:
                 ))
 
             # ── Alerting ─────────────────────────────────────────────────
-            if not gate_passed and thresholds:
-                try:
-                    ts_row = db.execute(
-                        select(TestSet).where(TestSet.id == run.test_set_id)
-                    ).scalar_one_or_none()
-                    ts_name = ts_row.name if ts_row else str(run.test_set_id)
+            try:
+                ts_row = db.execute(
+                    select(TestSet).where(TestSet.id == run.test_set_id)
+                ).scalar_one_or_none()
+                ts_name = ts_row.name if ts_row else str(run.test_set_id)
+
+                # Threshold breach alerts (gate failures)
+                if not gate_passed and thresholds:
                     AlertService.check_and_alert(
                         run_id=run_id,
                         test_set_name=ts_name,
@@ -265,8 +267,17 @@ def run_evaluation(self, run_id: str, metrics: list[str]) -> dict:
                         summary_metrics=summary,
                         thresholds=thresholds,
                     )
-                except Exception as exc:
-                    print(f"[warn] Alert dispatch failed: {exc}")
+
+                # Completion alert (all runs, or failures only based on config)
+                AlertService.send_completion_alert(
+                    run_id=run_id,
+                    test_set_name=ts_name,
+                    pipeline_version=run.pipeline_version,
+                    summary_metrics=summary,
+                    gate_passed=gate_passed,
+                )
+            except Exception as exc:
+                print(f"[warn] Alert dispatch failed: {exc}")
 
             db.commit()
 

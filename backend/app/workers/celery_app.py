@@ -10,6 +10,7 @@ celery_app = Celery(
     include=[
         "app.workers.tasks.evaluation_tasks",
         "app.workers.tasks.ingestion_tasks",
+        "app.workers.tasks.generation_tasks",
     ],
 )
 

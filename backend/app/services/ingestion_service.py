@@ -6,10 +6,11 @@ to the SamplingService, and returns ingestion statistics.
 """
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.schemas.ingestion import (
+    FeedbackStats,
     IngestResponse,
     ProductionLogIngest,
     ProductionLogResponse,
@@ -87,3 +88,47 @@ class IngestionService:
         if log is None:
             raise NotFoundError("ProductionLog", str(log_id))
         return ProductionLogResponse.model_validate(log)
+
+    async def update_feedback(self, log_id: uuid.UUID, feedback: str) -> ProductionLogResponse:
+        """Update user feedback on a production log entry."""
+        result = await self.db.execute(
+            select(ProductionLog).where(ProductionLog.id == log_id)
+        )
+        log = result.scalar_one_or_none()
+        if log is None:
+            raise NotFoundError("ProductionLog", str(log_id))
+        log.user_feedback = feedback
+        await self.db.flush()
+        return ProductionLogResponse.model_validate(log)
+
+    async def get_feedback_stats(self, source: str | None = None) -> FeedbackStats:
+        """Get aggregated feedback statistics."""
+        base = select(ProductionLog)
+        if source:
+            base = base.where(ProductionLog.source == source)
+
+        total_q = select(func.count(ProductionLog.id)).select_from(base.subquery())
+        up_q = select(func.count(ProductionLog.id)).where(
+            ProductionLog.user_feedback == "thumbs_up"
+        )
+        down_q = select(func.count(ProductionLog.id)).where(
+            ProductionLog.user_feedback == "thumbs_down"
+        )
+        if source:
+            up_q = up_q.where(ProductionLog.source == source)
+            down_q = down_q.where(ProductionLog.source == source)
+
+        total = (await self.db.execute(total_q)).scalar() or 0
+        thumbs_up = (await self.db.execute(up_q)).scalar() or 0
+        thumbs_down = (await self.db.execute(down_q)).scalar() or 0
+        no_feedback = total - thumbs_up - thumbs_down
+        positive_rate = thumbs_up / (thumbs_up + thumbs_down) if (thumbs_up + thumbs_down) > 0 else None
+
+        return FeedbackStats(
+            source=source,
+            total=total,
+            thumbs_up=thumbs_up,
+            thumbs_down=thumbs_down,
+            no_feedback=no_feedback,
+            positive_rate=positive_rate,
+        )
