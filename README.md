@@ -44,20 +44,11 @@ Manage evaluation test sets with system type badges, case counts, and last run s
 
 ![Test Sets](docs/screenshots/test-sets.png)
 
-### Test Set Detail
-View and manage individual test cases with queries, ground truths, tags, and failure rules. Trigger evaluation runs directly.
-
-![Test Set Detail](docs/screenshots/test-set-detail.png)
-
 ### Evaluation Runs
 All evaluation runs across systems with status, pass rate, system type, and pipeline version at a glance.
 
 ![Evaluation Runs](docs/screenshots/runs.png)
 
-### Run Detail
-Per-case results with metric gauges, regression diff vs baseline, and pipeline configuration details.
-
-![Run Detail](docs/screenshots/run-detail.png)
 
 ### Metric Trends
 Track quality metrics over time with 7/30/90-day selectors and threshold overlays.
