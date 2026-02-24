@@ -449,34 +449,6 @@ The workflow posts a formatted PR comment after each run:
 | Pass Rate           | 0.87   | 0.80      | ✅ Pass |
 ```
 
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_API_KEY` | — | **Required.** For Ragas, LLM judge, and demo adapters |
-| `DATABASE_URL` | `postgresql+asyncpg://rageval:rageval@db:5432/rageval` | Async PostgreSQL (FastAPI) |
-| `SYNC_DATABASE_URL` | `postgresql://rageval:rageval@db:5432/rageval` | Sync PostgreSQL (Celery + Alembic) |
-| `REDIS_URL` | `redis://redis:6379/0` | Redis connection |
-| `CELERY_BROKER_URL` | `redis://redis:6379/1` | Celery broker |
-| `CELERY_RESULT_BACKEND` | `redis://redis:6379/2` | Celery results |
-| `OPENAI_MODEL` | `gpt-4o` | LLM judge model |
-| `DEFAULT_FAITHFULNESS_THRESHOLD` | `0.7` | Gate threshold |
-| `DEFAULT_ANSWER_RELEVANCY_THRESHOLD` | `0.7` | Gate threshold |
-| `DEFAULT_CONTEXT_PRECISION_THRESHOLD` | `0.6` | Gate threshold |
-| `DEFAULT_CONTEXT_RECALL_THRESHOLD` | `0.6` | Gate threshold |
-| `DEFAULT_PASS_RATE_THRESHOLD` | `0.8` | Gate threshold |
-| `SAMPLING_RATE` | `0.2` | Production traffic sampling rate (0.0 – 1.0) |
-| `SAMPLING_ERROR_RATE` | `1.0` | Error traffic sampling rate |
-| `SERPER_API_KEY` | — | Optional. Enables Google web search fallback for Search Engine |
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8000/api/v1` | Frontend API URL |
-| `API_KEYS` | — | Optional. Comma-separated API keys for authenticated endpoints |
-| `CORS_ORIGINS` | `*` | Allowed CORS origins |
-| `ALERT_WEBHOOK_URL` | — | Optional. Webhook for gate failure alerts |
-
----
-
 ## Extending the System
 
 **Add a new AI system type:**
