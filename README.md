@@ -22,6 +22,55 @@ This project treats evaluation as a first-class concern — not an afterthought.
 
 ---
 
+## Screenshots
+
+### Dashboard
+Overview of evaluation runs, gate pass rates, and recent activity across all AI systems.
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+### AI Systems Health
+Health status and key metrics for all 4 monitored AI system types — RAG, Chatbot, Search, and Agent.
+
+![AI Systems](docs/screenshots/systems.png)
+
+### Playground
+Interactive 4-tab chat interface to test RAG, Agent, Chatbot, and Search systems with real-time detail panels.
+
+![Playground](docs/screenshots/playground.png)
+
+### Test Sets
+Manage evaluation test sets with system type badges, case counts, and last run status.
+
+![Test Sets](docs/screenshots/test-sets.png)
+
+### Test Set Detail
+View and manage individual test cases with queries, ground truths, tags, and failure rules. Trigger evaluation runs directly.
+
+![Test Set Detail](docs/screenshots/test-set-detail.png)
+
+### Evaluation Runs
+All evaluation runs across systems with status, pass rate, system type, and pipeline version at a glance.
+
+![Evaluation Runs](docs/screenshots/runs.png)
+
+### Run Detail
+Per-case results with metric gauges, regression diff vs baseline, and pipeline configuration details.
+
+![Run Detail](docs/screenshots/run-detail.png)
+
+### Metric Trends
+Track quality metrics over time with 7/30/90-day selectors and threshold overlays.
+
+![Metrics](docs/screenshots/metrics.png)
+
+### Production Traffic
+Monitor ingested production Q&A pairs with sampling statistics and source-level breakdowns.
+
+![Production Traffic](docs/screenshots/production.png)
+
+---
+
 ## Supported AI System Types
 
 | System Type | What It Evaluates | Key Metrics | Demo Adapter |
