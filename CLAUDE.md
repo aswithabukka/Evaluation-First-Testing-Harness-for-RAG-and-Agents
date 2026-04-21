@@ -50,7 +50,29 @@ python -m runner.cli gate --config rageval.yaml --fail-on-regression
 # Print report
 python -m runner.cli report --format console
 python -m runner.cli report --format json --output eval-report.json --diff
+
+# Calibrate an LLM judge against a human-labeled gold file (JSONL)
+python -m runner.cli calibrate --gold eval/judge_gold.jsonl --judge llm_judge --min-spearman 0.7
 ```
+
+### Unit tests (pure Python, no API required)
+```bash
+python3 -m pytest runner/tests/ backend/tests/    # 39 tests covering evaluators + gate stats
+```
+
+---
+
+## Production-grade upgrades (read first)
+
+Recent work added significance testing to the gate, hardened the LLM-based evaluators, and introduced run reproducibility, cost budgets, and judge calibration. When editing this codebase:
+
+1. **Don't return `0.0` on LLM-judge failure.** Return `None` plus an `EvalError` on `MetricScores.error`. Returning 0.0 would trip the release gate for infra reasons, not quality reasons.
+2. **Don't duplicate OpenAI client setup in a new evaluator.** Take a `client: LLMClient` kwarg and default to `get_default_client()` — you get retries, backoff, cost accounting, prompt caching, and concurrency control for free.
+3. **`MetricScores` is backward-compatible.** Legacy RAG fields (`faithfulness` etc.) are still read by the backend; new evaluators should write into the generic `scores` dict instead.
+4. **The gate is significance-aware.** `significance_gate` in `runner/gate/stats.py` is mirrored in `backend/app/services/_gate_stats.py`. Any change to one must be applied to the other and verified by `backend/tests/test_gate_stats.py`.
+5. **Runner tests are pure-Python.** `runner/tests/` + `backend/tests/*` run without the API, without Ragas, without OpenAI — 50 tests today. Keep them that way by putting LLM-dependent evaluators behind optional imports.
+6. **New evaluators activate from config, not code.** Registry-driven dispatch lives at `backend/app/workers/_registry_dispatch.py`. Adding a name from `EVALUATOR_REGISTRY` to the `metrics:` list in `rageval.yaml` turns that evaluator on; per-evaluator config lives under `pipeline_config.evaluators.<name>`. The worker routes batch-level evaluators (`calibration`) to a post-loop handler automatically.
+7. **Provider is runtime-switchable.** `LLMClient` accepts `base_url` + OpenRouter-style `provider/model` slugs. Setting `OPENROUTER_API_KEY` alone auto-routes every LLM-based evaluator through OpenRouter with no code changes. Ragas is wrapped via its `LangchainLLMWrapper` + `ChatOpenAI(openai_api_base=...)` path — see `_build_ragas_llm()` in `runner/evaluators/ragas_evaluator.py`. Provider selection precedence: `LLM_PROVIDER` env var → provider-slug detection on the model string → presence of either API key.
 
 ---
 
@@ -98,7 +120,8 @@ System type is stored on `test_sets.system_type` and drives metric selection, UI
 |---------|------|-------------|
 | Test Set Manager | `backend/app/services/test_set_service.py`, `test_case_service.py` | CRUD for test sets and cases; bumps test set version on every case mutation |
 | Evaluation Service | `backend/app/services/evaluation_service.py` | Creates run records, dispatches Celery task |
-| Release Gate | `backend/app/services/release_gate_service.py` | Compares `summary_metrics` against `gate_threshold_snapshot`; computes regression diff vs last passing run |
+| Release Gate | `backend/app/services/release_gate_service.py` | Significance-aware: pulls per-case raw scores, uses `_gate_stats.significance_gate()` (bootstrap CI + Mann-Whitney U) to compare to `gate_threshold_snapshot` and the last passing baseline; returns `ci_lower`/`ci_upper`/`p_value`/`sample_size` per failure |
+| Gate Stats (shared) | `backend/app/services/_gate_stats.py`, `runner/gate/stats.py` | Mirrored pure-Python `bootstrap_ci`, `mann_whitney_u`, `significance_gate`. Parity pinned by `backend/tests/test_gate_stats.py`. |
 | Metrics Service | `backend/app/services/metrics_service.py` | Reads from `metrics_history` for trend charts |
 | Ingestion Service | `backend/app/services/ingestion_service.py` | Production traffic ingestion with configurable sampling; user feedback (thumbs up/down) with aggregated stats |
 | Sampling Service | `backend/app/services/sampling_service.py` | Decides which production queries get sampled for evaluation |
@@ -148,19 +171,41 @@ return adapter_cls(**init_kwargs)
 
 ### Evaluators
 
+All evaluators subclass `BaseEvaluator` (`runner/evaluators/base_evaluator.py`) and return `MetricScores` objects. `MetricScores` carries legacy RAG fields (faithfulness, answer_relevancy, context_precision, context_recall) for backward compatibility **plus** a generic `scores: dict[str, float | None]`, an `error: EvalError | None` marker (so judge-failures produce `None`, not 0.0 — gate never trips on infra errors), and `cost_usd` / `latency_ms` / `metadata` / `version` for observability.
+
+LLM-based evaluators share `runner/evaluators/_llm.py` — a `LLMClient` with retries + exponential backoff, token/cost tracking via `MODEL_PRICES`, prompt-hash caching, and a concurrency semaphore. Lookup by string name via `EVALUATOR_REGISTRY` in `runner/evaluators/__init__.py`.
+
 | Evaluator | File | Description |
 |-----------|------|-------------|
-| `RagasEvaluator` | `runner/evaluators/ragas_evaluator.py` | Runs Ragas metrics (faithfulness, answer_relevancy, context_precision, context_recall) using an LLM judge (OpenAI). Batches test cases. |
+| `RagasEvaluator` | `runner/evaluators/ragas_evaluator.py` | Ragas metrics with per-row error isolation and NaN handling. On batch failure, falls back to per-row calls so one bad row can't sink the whole batch. |
 | `RuleEvaluator` | `runner/evaluators/rule_evaluator.py` | Interprets `failure_rules` JSONB per test case (see table below). Returns `{passed, details}` per rule. |
-| `LLMJudgeEvaluator` | `runner/evaluators/llm_judge_evaluator.py` | Uses GPT-4o to score free-form responses against configurable criteria. Returns score (0–1) and reasoning string. |
+| `LLMJudgeEvaluator` | `runner/evaluators/llm_judge_evaluator.py` | GPT-4o judge with **self-consistency** (k-sample median), verbosity-bias hint, and None-on-error semantics. Variance reported so flaky cases can be detected. |
+| `GEvalEvaluator` | `runner/evaluators/geval_evaluator.py` | G-Eval pattern (Liu et al., EMNLP 2023): auto-generates a rubric once, then forces chain-of-thought scoring on a 1-5 integer scale (normalised to 0-1). |
+| `PairwiseEvaluator` | `runner/evaluators/pairwise_evaluator.py` | A/B preference judging. Runs each comparison twice with swapped positions to cancel position bias; detects disagreement. |
+| `CitationEvaluator` | `runner/evaluators/citation_evaluator.py` | Decomposes answer into atomic claims, checks each against retrieved context. Flags unsupported claims; stricter than Ragas faithfulness. |
+| `TrajectoryEvaluator` | `runner/evaluators/trajectory_evaluator.py` | Agent tool-sequence similarity (1 - normalised Levenshtein), JSON-schema validation of args, semantic argument match. Order-aware. |
+| `RobustnessEvaluator` | `runner/evaluators/robustness_evaluator.py` | Scores paraphrase consistency + adversarial robustness over char-n-gram similarity. Ships `paraphrase_typo()` and `adversarial_injection_suffix()` perturbers. |
+| `CalibrationEvaluator` | `runner/evaluators/calibration_evaluator.py` | Expected Calibration Error (ECE), max bin gap, and overconfidence rate across confidence buckets. Per-case results broadcast the batch-level scores. |
+| `SafetyEvaluator` | `runner/evaluators/safety_evaluator.py` | **Three layers**: regex (always on), optional Presidio for ML-backed PII, optional Llama Guard / ShieldGemma for toxicity + jailbreak classification. Falls back cleanly when a layer isn't installed. |
 | `MultiTurnAgentEvaluator` | `runner/multi_turn/agent_evaluator.py` | Evaluates multi-turn conversations. Returns `AgentEvalResult` with `passed`, `turn_results`, `goal_completed`, and `failure_reason`. |
 | `CodeEvaluator` | `runner/evaluators/code_evaluator.py` | Evaluates generated code: syntax check, test execution, linting. |
 | `RankingEvaluator` | `runner/evaluators/ranking_evaluator.py` | Computes NDCG, MRR, MAP, precision@k for search/retrieval systems. |
 | `SimilarityEvaluator` | `runner/evaluators/similarity_evaluator.py` | ROUGE-L, BLEU, cosine similarity for summarization/translation. |
-| `ClassificationEvaluator` | `runner/evaluators/classification_evaluator.py` | Accuracy, F1, precision, recall for classification systems. |
+| `ClassificationEvaluator` | `runner/evaluators/classification_evaluator.py` | Accuracy, F1 (macro/micro/weighted), Cohen's kappa, AUC-ROC, PR-AUC, **confusion matrix**, and **Matthews correlation coefficient** (preferred over accuracy on imbalanced data). |
 | `ConversationEvaluator` | `runner/evaluators/conversation_evaluator.py` | Coherence, helpfulness, safety scoring for chatbots. |
 | `AgentEvaluator` | `runner/evaluators/agent_evaluator.py` | Tool accuracy, goal completion, efficiency for agent systems. |
 | `TranslationEvaluator` | `runner/evaluators/translation_evaluator.py` | BLEU, translation accuracy metrics. |
+
+### Production-grade runner infrastructure
+
+| Module | File | Purpose |
+|--------|------|---------|
+| Shared LLM client | `runner/evaluators/_llm.py` | `LLMClient` with retries/backoff, cost tracking, prompt caching, concurrency semaphore. `get_default_client()` returns a shared singleton. |
+| Statistical gate | `runner/gate/stats.py` | `bootstrap_ci`, `mann_whitney_u`, `significance_gate` (CI-lower vs threshold + p-value vs baseline). Mirrored in `backend/app/services/_gate_stats.py`. |
+| Reproducibility manifest | `runner/manifest.py` | `Manifest` snapshots evaluator versions, library versions, prompt hashes, seeds, and git commit into a single object. `fingerprint()` yields a stable hash for audit. |
+| Cost + time budget | `runner/budget.py` | `Budget(max_usd, max_seconds)` with `record()` / `check()` / `summary()`. Raises `BudgetExceeded` so the runner can mark a run as `partial` instead of failing. |
+| Flakiness detection | `runner/flakiness.py` | `detect_flaky(cases, score_fn, k, variance_threshold)` reruns top-N failing cases and flags high-variance ones for exclusion from gate decisions. |
+| Judge calibration harness | `runner/calibration_harness.py` | `load_gold()` + `calibrate()` compute Spearman and Kendall tau between a judge's scores and a human-labeled gold file. Exposed via `rageval calibrate`. |
 
 ### Failure rule engine
 
@@ -308,6 +353,8 @@ Run with: `docker compose exec api python -m app.scripts.seed_demo_data` or `mak
 
 `.github/workflows/release-gate.yml` — queries `GET /runs?git_commit_sha=<sha>` for `overall_passed`; sets a GitHub commit status.
 
+The gate response now carries `ci_lower`, `ci_upper`, `p_value`, `sample_size`, `baseline_size`, and a human-readable `reason` per metric failure. The CLI prints these inline on `rageval gate`; the PR comment template renders them alongside the classic metric table. Baseline comparisons only fail the gate when Mann-Whitney p < 0.05 vs. the last passing run — noise-level drops no longer trip CI.
+
 ---
 
 ## Environment variables
@@ -341,6 +388,10 @@ Run with: `docker compose exec api python -m app.scripts.seed_demo_data` or `mak
 **New rule type:** Add to `RuleType` enum and a branch in `RuleEvaluator._evaluate_rule()` in `runner/evaluators/rule_evaluator.py`.
 
 **New metric:** Add to `RagasEvaluator.SUPPORTED_METRICS` and the `metric_obj_map` in `runner/evaluators/ragas_evaluator.py`. Add a corresponding column to the `evaluation_results` table via a new Alembic migration.
+
+**New evaluator:** Subclass `BaseEvaluator` in `runner/evaluators/`, implement `evaluate_batch(test_cases) -> list[MetricScores]`, write scores to `MetricScores.scores` (dict), set `name` and `version` class attributes. Register in `EVALUATOR_REGISTRY` in `runner/evaluators/__init__.py`. For LLM-backed evaluators, accept a `client: LLMClient` kwarg and default to `get_default_client()` so you inherit retries, caching, and cost tracking for free. Return `None` scores with an `EvalError` on any failure so the gate doesn't treat infra errors as regressions.
+
+**Tuning the gate:** `runner/gate/stats.py::significance_gate` takes `threshold`, `confidence` (default 0.95), `p_threshold` (default 0.05), and `higher_is_better`. The backend copy at `backend/app/services/_gate_stats.py` must stay in sync — `backend/tests/test_gate_stats.py` pins the parity contract.
 
 **Custom plugin:** Implement `evaluate(self, output, tool_calls, rule) -> tuple[bool, str]` and reference via `{"type": "custom", "plugin_class": "my_module.MyClass"}` in failure rules.
 

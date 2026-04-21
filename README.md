@@ -29,38 +29,121 @@ This project treats evaluation as a first-class concern — not an afterthought.
 
 ---
 
+## Production-Grade Upgrades
+
+Recent work hardens the evaluator layer and the release gate:
+
+### New evaluators
+
+| Evaluator | Purpose |
+|---|---|
+| `GEvalEvaluator` | G-Eval: auto-rubric + chain-of-thought judge (Liu et al., EMNLP 2023) |
+| `PairwiseEvaluator` | A/B preference judging with position-swap bias control |
+| `CitationEvaluator` | Claim-level faithfulness — decomposes answer into atomic claims and verifies each against retrieved context |
+| `TrajectoryEvaluator` | Agent tool-sequence edit distance + argument JSON-schema validation |
+| `RobustnessEvaluator` | Paraphrase consistency + adversarial perturbation (typos, prompt-injection) |
+| `CalibrationEvaluator` | Expected Calibration Error (ECE) over confidence bins |
+
+The existing `LLMJudgeEvaluator` now runs with **self-consistency** (k-sampling + median), returns `None` on judge failure (so infra errors no longer trip the gate), and goes through a shared LLM client with retries, backoff, cost tracking, and prompt caching (`runner/evaluators/_llm.py`).
+
+`SafetyEvaluator` gained optional **Presidio** (ML-backed PII) and **Llama Guard / ShieldGemma** (toxicity + jailbreak) layers, with the regex heuristics kept as a fast-path fallback.
+
+`ClassificationEvaluator` now reports a **confusion matrix** and **Matthews correlation coefficient** alongside the existing macro/micro/weighted F1.
+
+### Significance-aware release gate
+
+`runner/gate/stats.py` (and the mirrored `backend/app/services/_gate_stats.py`) add:
+
+- **Bootstrap CIs** — the gate compares the lower bound of a 95% CI to the threshold, not the point estimate. Small-sample noise stops tripping the gate.
+- **Mann-Whitney U vs. baseline** — regressions fail only when they're statistically significant (p < 0.05 by default) relative to the last passing run.
+
+Gate responses now include `ci_lower`, `ci_upper`, `p_value`, `sample_size`, and `baseline_size`. The CLI prints them inline.
+
+### Run reproducibility
+
+`runner/manifest.py` snapshots every evaluator version, every LLM prompt hash, every seed, and every tracked library version into a per-run manifest. Two runs with the same fingerprint are expected to produce the same gate decision.
+
+### Cost budget + flakiness
+
+- `runner/budget.py` — per-run `$` and wall-clock ceilings, fast-fail on overshoot.
+- `runner/flakiness.py` — re-runs the top-N failing cases `k` times; high-variance cases are marked flaky and excluded from gate decisions.
+
+### Judge calibration
+
+`runner/calibration_harness.py` correlates any LLM judge against a JSONL of human-labeled examples, reporting Spearman and Kendall. Surfaced as `rageval calibrate --gold gold.jsonl --min-spearman 0.7` so CI can catch judge drift after a model or prompt change.
+
+### Test coverage
+
+65 unit tests under `runner/tests/` and `backend/tests/` cover the statistical helpers, the refactored base evaluator, the trajectory / calibration / robustness evaluators, the registry-driven dispatch, OpenRouter provider routing, and parity between the backend and runner copies of the gate stats.
+
+### OpenRouter support (cheaper open-source judges)
+
+The shared `LLMClient` is provider-agnostic. Set `OPENROUTER_API_KEY` in `.env` and the harness automatically routes every LLM-based evaluator (Ragas, LLMJudge, GEval, Pairwise, Citation) through OpenRouter — no code changes required.
+
+**Recommended judges (OpenRouter live catalog, April 2026):**
+
+| Role | Model ID | Context | Cost per 1M (in/out) |
+|---|---|---|---|
+| **Primary judge (best value)** | `qwen/qwen3.6-plus` | 1,000,000 | **$0.33 / $1.95** |
+| **Cheapest strong judge** | `deepseek/deepseek-v3.2` | 131,072 | **$0.25 / $0.38** |
+| **Flagship OSS** | `qwen/qwen3.5-397b-a17b` (MoE) | 262,144 | $0.39 / $2.34 |
+| **Long-answer specialist** | `moonshotai/kimi-k2.6` | 262,144 | $0.60 / $2.80 |
+| **Reasoning (for `g_eval`)** | `qwen/qwen3-max-thinking` | 262,144 | $0.78 / $3.90 |
+| **Cheap reasoning** | `qwen/qwen3-235b-a22b-thinking-2507` | 262,144 | $0.13 / $0.60 |
+| **Kimi reasoning** | `moonshotai/kimi-k2-thinking` | 262,144 | $0.60 / $2.50 |
+| **New Z.AI contender** | `z-ai/glm-5` | 202,752 | $0.65 / $2.08 |
+| **Calibration gold** | `anthropic/claude-opus-4.7` | 1,000,000 | $5.00 / $25.00 |
+| **Calibration fast** | `anthropic/claude-sonnet-4.6` | 1,000,000 | $3.00 / $15.00 |
+| **OpenAI frontier** | `openai/gpt-5.4` | 1,050,000 | $2.50 / $15.00 |
+
+**Cost math on a 200-case full eval** (assume ~2k input + 500 output tokens per case):
+- Qwen 3.6 Plus: ~$0.33 total
+- DeepSeek V3.2: ~$0.14 total
+- Kimi K2.6: ~$0.52 total
+- GPT-5.4: ~$2.50 total
+- Claude Opus 4.7: ~$4.50 total
+
+The shared `_llm.py` MODEL_PRICES table is refreshed from OpenRouter's public catalog — update with `curl https://openrouter.ai/api/v1/models | jq` and re-run `runner/tests/test_openrouter_wiring.py::test_recommended_openrouter_models_have_prices` to catch regressions.
+
+---
+
 ## Screenshots
+
+### Release Gate in Action — blocked deploy
+
+The significance-aware gate in action: bootstrap 95% CI lower bound compared against the threshold, per-metric reasoning, linked baseline run, and — on the right — the reproducibility manifest (evaluator versions, library versions, seeds, fingerprint) plus the cost/time budget showing an exceeded ceiling in red. Judge: Qwen 3.6 Plus via OpenRouter.
+
+![Run detail — blocked gate with CI bars + manifest panel](docs/screenshots/run-blocked-gate.png)
 
 ### Dashboard
 Overview of evaluation runs, gate pass rates, and recent activity across all AI systems.
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
+### Evaluation Runs
+All evaluation runs across systems with status, pass rate, system type, and pipeline version at a glance. Checkbox selection enables side-by-side comparison of 2-4 runs.
+
+![Evaluation Runs](docs/screenshots/runs.png)
+
 ### AI Systems Health
-Health status and key metrics for all 4 monitored AI system types — RAG, Chatbot, Search, and Agent.
+Health status and key metrics for all monitored AI system types — RAG, Chatbot, Search, and Agent.
 
 ![AI Systems](docs/screenshots/systems.png)
 
-### Playground
-Interactive 4-tab chat interface to test RAG, Agent, Chatbot, and Search systems with real-time detail panels.
+### Metric Trends
+Track quality metrics over time with 7/30/90-day selectors and threshold overlays.
 
-![Playground](docs/screenshots/playground.png)
+![Metrics](docs/screenshots/metrics.png)
 
 ### Test Sets
 Manage evaluation test sets with system type badges, case counts, and last run status.
 
 ![Test Sets](docs/screenshots/test-sets.png)
 
-### Evaluation Runs
-All evaluation runs across systems with status, pass rate, system type, and pipeline version at a glance.
+### Playground
+Interactive 4-tab chat interface to test RAG, Agent, Chatbot, and Search systems with real-time detail panels.
 
-![Evaluation Runs](docs/screenshots/runs.png)
-
-
-### Metric Trends
-Track quality metrics over time with 7/30/90-day selectors and threshold overlays.
-
-![Metrics](docs/screenshots/metrics.png)
+![Playground](docs/screenshots/playground.png)
 
 ### Production Traffic
 Monitor ingested production Q&A pairs with sampling statistics and source-level breakdowns.

@@ -35,6 +35,85 @@ metrics:
   - context_precision     # Ragas: is retrieved context relevant?
   - context_recall        # Ragas: does context cover the ground truth?
   - rule_evaluation       # Always runs failure_rules from test cases
+  # Registry-driven evaluators (EVALUATOR_REGISTRY in runner/evaluators/__init__.py).
+  # Add any of these to activate — the worker dispatches automatically:
+  # - g_eval              # Chain-of-thought LLM judge (Liu et al., EMNLP 2023)
+  # - citation            # Claim-level faithfulness
+  # - trajectory          # Agent tool-sequence edit distance + arg validation
+  # - robustness          # Paraphrase + adversarial consistency
+  # - calibration         # Expected Calibration Error (batch-level, runs once per run)
+  # - safety              # Layered: regex + Presidio + Llama Guard (all optional)
+  # - llm_judge           # Self-consistent LLM judge (k-sample median)
+  # - pairwise            # A/B preference — for multi-model comparison runs only
+
+# ── Per-evaluator configuration ─────────────────────────────────────────────
+# Read by the registry-driven dispatch at runtime. Unknown keys are ignored;
+# an evaluator that's not listed in `metrics:` above won't run even if
+# configured here.
+pipeline_config:
+  evaluators:
+    g_eval:
+      aspect: "overall"
+      description: "accuracy, helpfulness, and groundedness"
+      model: "gpt-4o"
+      samples: 3
+    citation:
+      model: "gpt-4o"
+      max_claims: 10
+    robustness:
+      ngram_size: 3
+    safety:
+      use_presidio: false      # requires presidio-analyzer in the container
+      use_guard_model: false   # requires transformers + torch + a downloaded model
+    llm_judge:
+      model: "gpt-4o"
+      criteria: "accuracy, helpfulness, and groundedness"
+      samples: 3
+
+# ── Release Gate Significance ────────────────────────────────────────────────
+# The gate compares the 95% CI lower-bound of the current run to the threshold
+# (instead of just the mean), and flags regressions vs. the last passing run
+# only when Mann-Whitney U gives p < p_threshold.
+gate:
+  confidence: 0.95        # Bootstrap CI confidence level
+  p_threshold: 0.05       # Reject baseline regressions with p below this
+
+# ── Cost + Latency Budget (optional) ─────────────────────────────────────────
+# Enforced by runner/budget.py. The run is marked "partial" when exceeded
+# instead of failing outright — you keep whatever was evaluated.
+budget:
+  max_usd: 5.00
+  max_seconds: 600
+
+# ── LLM Judge Settings (optional) ────────────────────────────────────────────
+# Used by LLMJudgeEvaluator, GEvalEvaluator, PairwiseEvaluator, etc.
+# The shared LLMClient auto-routes through OpenRouter when OPENROUTER_API_KEY
+# is set OR when the model string is a provider/model slug (has a slash).
+llm_judge:
+  # Best value OSS primary judge (April 2026): Qwen 3.6 Plus — 1M context,
+  # $0.33/M in, $1.95/M out, solid JSON compliance.
+  model: "qwen/qwen3.6-plus"
+  # Alternatives (uncomment to swap):
+  #   "deepseek/deepseek-v3.2"              — CHEAPEST, $0.25/$0.38
+  #   "moonshotai/kimi-k2.6"                — 262k ctx, long-answer specialist
+  #   "qwen/qwen3-max-thinking"             — reasoning for g_eval
+  #   "qwen/qwen3-235b-a22b-thinking-2507"  — cheapest reasoning
+  #   "moonshotai/kimi-k2-thinking"         — Kimi reasoning
+  #   "qwen/qwen3.5-397b-a17b"              — MoE flagship
+  #   "z-ai/glm-5"                          — new Z.AI contender
+  #   "anthropic/claude-opus-4.7"           — gold calibration baseline
+  #   "anthropic/claude-sonnet-4.6"         — fast calibration baseline
+  #   "openai/gpt-5.4"                      — OpenAI frontier via OpenRouter
+  samples: 3              # Self-consistency: median of k samples per case
+  max_concurrency: 8
+  cache_ttl_seconds: 3600
+
+# ── Judge Calibration (optional) ─────────────────────────────────────────────
+# Run `rageval calibrate --gold gold.jsonl --min-spearman 0.7` in CI to detect
+# judge drift after model or prompt changes.
+calibration:
+  gold_file: "eval/judge_gold.jsonl"
+  min_spearman: 0.7
 
 # ── API Connection ───────────────────────────────────────────────────────────
 api:
