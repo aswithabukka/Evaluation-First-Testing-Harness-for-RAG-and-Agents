@@ -45,3 +45,8 @@ eval-report.json
 # Docker volumes (local)
 postgres-data/
 redis-data/
+
+# Runtime-generated artifacts (not source)
+backend/celerybeat-schedule
+frontend/tsconfig.tsbuildinfo
+frontend/next-env.d.ts
