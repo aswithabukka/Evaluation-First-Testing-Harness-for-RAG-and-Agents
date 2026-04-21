@@ -27,6 +27,27 @@ from app.db.models.test_set import TestSet
 from app.services.alert_service import AlertService
 from app.workers.celery_app import celery_app
 
+# runner.* is importable because docker-compose mounts ./runner into the
+# worker container and PYTHONPATH=/app makes it resolvable. These helpers
+# give us cost/latency budgets and a reproducibility manifest without
+# coupling the backend to a specific evaluator.
+try:
+    from runner.budget import Budget, BudgetExceeded
+    from runner.manifest import Manifest
+    _RUNNER_AVAILABLE = True
+except ImportError:
+    _RUNNER_AVAILABLE = False
+    Budget = None  # type: ignore
+    BudgetExceeded = Exception  # type: ignore
+    Manifest = None  # type: ignore
+
+
+from app.workers._manifest_helpers import record_evaluator as _record_evaluator  # noqa: E402
+from app.workers._registry_dispatch import (  # noqa: E402
+    extract_calibration_batch,
+    run_registry_evaluators,
+)
+
 
 def _load_adapter(pipeline_config: dict | None):
     """
@@ -125,14 +146,73 @@ def run_evaluation(self, run_id: str, metrics: list[str]) -> dict:
                 db.commit()
                 return {"run_id": run_id, "status": "completed", "total_cases": 0}
 
+            # ── Budget + Manifest setup ───────────────────────────────────
+            # Budget ceilings come from pipeline_config.budget at trigger time:
+            #   {"budget": {"max_usd": 5.0, "max_seconds": 600}}
+            # When the budget trips, we stop evaluating further cases but keep
+            # whatever we have and mark the run ``partial`` (via a flag on
+            # summary_metrics). Never raise out of the task itself.
+            budget_cfg = (run_pipeline_config or {}).get("budget") or {}
+            budget = None
+            if _RUNNER_AVAILABLE and (budget_cfg.get("max_usd") or budget_cfg.get("max_seconds")):
+                budget = Budget(
+                    max_usd=budget_cfg.get("max_usd"),
+                    max_seconds=budget_cfg.get("max_seconds"),
+                )
+
+            # Manifest records evaluator + prompt + library versions so this
+            # run is reproducible. Seal it before writing to the run row.
+            manifest = Manifest() if _RUNNER_AVAILABLE else None
+            if manifest is not None:
+                manifest.record_seed("gate_bootstrap", 42)
+                manifest.record_seed("llm_judge_base", 0)
+
             results = []
             passed_count = 0
+            budget_exceeded = False
 
             for tc in test_cases:
-                result = _evaluate_test_case(tc, run, metrics, db, pipeline, system_type)
+                if budget is not None:
+                    try:
+                        budget.check()
+                    except BudgetExceeded:
+                        budget_exceeded = True
+                        print(f"[warn] Budget exceeded: {budget.exceeded_reason}")
+                        break
+
+                result = _evaluate_test_case(
+                    tc, run, metrics, db, pipeline, system_type,
+                    manifest=manifest, budget=budget,
+                )
                 results.append(result)
                 if result.passed:
                     passed_count += 1
+
+            # ── Batch-level evaluators (calibration) ──────────────────────
+            # CalibrationEvaluator is batch-scoped — it needs ALL cases'
+            # (confidence, correct) pairs to compute ECE. Run once here
+            # after the per-case loop, attach ECE to the summary.
+            calibration_scores: dict[str, float | None] = {}
+            if "calibration" in metrics:
+                try:
+                    batch = extract_calibration_batch(results, test_cases)
+                    if batch:
+                        from runner.evaluators.calibration_evaluator import CalibrationEvaluator
+                        calibrator = CalibrationEvaluator()
+                        if manifest is not None:
+                            _record_evaluator(
+                                manifest,
+                                "runner.evaluators.calibration_evaluator",
+                                "CalibrationEvaluator",
+                            )
+                        cal_results = calibrator.evaluate_batch(batch)
+                        if cal_results and cal_results[0].scores:
+                            calibration_scores = {
+                                k: v for k, v in cal_results[0].scores.items()
+                                if v is not None
+                            }
+                except Exception as exc:
+                    print(f"[warn] Calibration evaluation failed: {exc}")
 
             # ── Summary metrics ───────────────────────────────────────────
             def _clean(v):
@@ -154,6 +234,11 @@ def run_evaluation(self, run_id: str, metrics: list[str]) -> dict:
                 "failed_cases": total - passed_count,
                 "pass_rate": passed_count / total if total > 0 else 0.0,
             }
+            # Batch-level calibration (if enabled) lives under the standard
+            # ``avg_<metric>`` shape so the frontend's aggregation and the
+            # MetricsHistory trends pick it up automatically.
+            for k, v in calibration_scores.items():
+                summary[f"avg_{k}"] = v
 
             # RAG-specific summary metrics
             if system_type == "rag":
@@ -225,7 +310,24 @@ def run_evaluation(self, run_id: str, metrics: list[str]) -> dict:
             run.status = RunStatus.COMPLETED if gate_passed else RunStatus.GATE_BLOCKED
             run.overall_passed = gate_passed
             run.completed_at = datetime.now(timezone.utc)
+            if budget_exceeded:
+                # Preserve the "what we have" principle — the run is still
+                # considered completed but flagged as partial in the summary.
+                summary["partial_run"] = True
+                summary["partial_reason"] = (
+                    budget.exceeded_reason if budget else "budget_exceeded"
+                )
+                summary["cases_evaluated"] = len(results)
+                summary["cases_total"] = len(test_cases)
             run.summary_metrics = summary
+
+            # Persist the reproducibility manifest + budget summary.
+            if manifest is not None:
+                manifest.seal(commit_sha=run.git_commit_sha)
+                run.manifest = manifest.to_dict()
+                run.manifest_fingerprint = manifest.fingerprint()
+            if budget is not None:
+                run.budget_summary = budget.summary()
 
             # ── Metrics history ───────────────────────────────────────────
             # Write all avg_* keys to metrics history for trend tracking
@@ -310,8 +412,15 @@ def _evaluate_test_case(
     db: Session,
     pipeline=None,
     system_type: str = "rag",
+    manifest=None,
+    budget=None,
 ) -> EvaluationResult:
-    """Score a single test case using the pipeline + system-specific evaluator."""
+    """Score a single test case using the pipeline + system-specific evaluator.
+
+    ``manifest`` and ``budget`` are optional runner-side objects used for
+    reproducibility + cost control. When present we record the evaluators
+    used and tick the budget with any per-case cost returned by evaluators.
+    """
     import time
 
     start = time.monotonic()
@@ -369,6 +478,8 @@ def _evaluate_test_case(
                 answer_relevancy = _nan_to_none(scores.get("answer_relevancy"))
                 context_precision = _nan_to_none(scores.get("context_precision"))
                 context_recall = _nan_to_none(scores.get("context_recall"))
+                if manifest is not None:
+                    _record_evaluator(manifest, "runner.evaluators.ragas_evaluator", "RagasEvaluator")
             except Exception as exc:
                 if failure_reason is None:
                     failure_reason = f"Ragas evaluation failed: {exc}"
@@ -409,6 +520,8 @@ def _evaluate_test_case(
                 actual_steps=len(tool_calls_data) if tool_calls_data else None,
             )
             extended_metrics = {k: _nan_to_none(v) for k, v in scores.items() if v is not None}
+            if manifest is not None:
+                _record_evaluator(manifest, "runner.evaluators.agent_evaluator", "AgentEvaluator")
         except Exception as exc:
             if failure_reason is None:
                 failure_reason = f"Agent evaluation failed: {exc}"
@@ -440,6 +553,8 @@ def _evaluate_test_case(
                 entities_to_retain=entities,
             )
             extended_metrics = {k: _nan_to_none(v) for k, v in scores.items()}
+            if manifest is not None:
+                _record_evaluator(manifest, "runner.evaluators.conversation_evaluator", "ConversationEvaluator")
         except Exception as exc:
             if failure_reason is None:
                 failure_reason = f"Conversation evaluation failed: {exc}"
@@ -471,6 +586,8 @@ def _evaluate_test_case(
                     expected_ranking=expected_ranking,
                 )
                 extended_metrics = {k: _nan_to_none(v) for k, v in scores.items()}
+                if manifest is not None:
+                    _record_evaluator(manifest, "runner.evaluators.ranking_evaluator", "RankingEvaluator")
             else:
                 # No expected ranking — can't compute IR metrics
                 extended_metrics = {
@@ -481,11 +598,61 @@ def _evaluate_test_case(
             if failure_reason is None:
                 failure_reason = f"Ranking evaluation failed: {exc}"
 
+    # ── Step 2b: Registry-driven evaluators ────────────────────────────
+    # Anything in `metrics` that matches an EVALUATOR_REGISTRY name runs
+    # here: g_eval, citation, trajectory, robustness, safety, llm_judge.
+    # These run ALONGSIDE the system-type-specific branch above (they do
+    # not replace it). Legacy RAG/Agent/Chatbot/Search scoring stays exactly
+    # as before; the new evaluators add their scores on top.
+    try:
+        registry_scores, registry_errors = run_registry_evaluators(
+            tc=tc,
+            metrics=metrics,
+            pipeline_config=run.pipeline_config,
+            raw_output=raw_output or "",
+            raw_contexts=raw_contexts,
+            tool_calls_data=tool_calls_data,
+            openai_api_key=getattr(settings, "OPENAI_API_KEY", None),
+            manifest=manifest,
+            budget=budget,
+            record_evaluator_fn=_record_evaluator,
+        )
+        if registry_scores:
+            if extended_metrics is None:
+                extended_metrics = {}
+            for k, v in registry_scores.items():
+                # Don't clobber legacy columns — those flow through the
+                # typed EvaluationResult columns below.
+                if k in ("faithfulness", "answer_relevancy",
+                         "context_precision", "context_recall"):
+                    if k == "faithfulness" and faithfulness is None:
+                        faithfulness = v
+                    elif k == "answer_relevancy" and answer_relevancy is None:
+                        answer_relevancy = v
+                    elif k == "context_precision" and context_precision is None:
+                        context_precision = v
+                    elif k == "context_recall" and context_recall is None:
+                        context_recall = v
+                else:
+                    extended_metrics[k] = v
+        if registry_errors and failure_reason is None:
+            # Only surface registry errors as the failure reason if nothing
+            # else already flagged the case — otherwise we drown the real
+            # cause in "llm_judge: rate_limit".
+            failure_reason = "; ".join(registry_errors[:3])
+    except Exception as exc:
+        # run_registry_evaluators swallows per-evaluator errors; reaching
+        # here means something broke at the dispatch layer itself. Log but
+        # don't fail the case.
+        print(f"[warn] Registry dispatch failed: {exc}")
+
     # ── Step 3: Rule evaluation ────────────────────────────────────────
     if "rule_evaluation" in metrics and tc.failure_rules:
         try:
             from runner.evaluators.rule_evaluator import RuleEvaluator
             rule_eval = RuleEvaluator()
+            if manifest is not None:
+                _record_evaluator(manifest, "runner.evaluators.rule_evaluator", "RuleEvaluator")
             rule_result = rule_eval.evaluate_single(
                 query=tc.query,
                 output=raw_output or "",
@@ -565,7 +732,14 @@ def _run_ragas(
     answer: str = "",
     contexts: Optional[list[str]] = None,
 ) -> dict:
-    """Run Ragas evaluation for a single test case. Returns metric scores."""
+    """Run Ragas evaluation for a single test case. Returns metric scores.
+
+    Honours the active LLM provider: when OPENROUTER_API_KEY / LLM_PROVIDER
+    routing is configured, we wrap Ragas' internal LLM via
+    ``_build_ragas_llm()`` so it talks to OpenRouter instead of the OpenAI
+    default. Without this the worker would silently fall back to OpenAI and
+    fail with 401s even though the operator configured OpenRouter.
+    """
     from datasets import Dataset
     from ragas import evaluate as ragas_evaluate
     from ragas.metrics import (
@@ -574,6 +748,14 @@ def _run_ragas(
         context_recall,
         faithfulness,
     )
+
+    # Provider router — returns None for OpenAI (default), a LangChain
+    # wrapper for OpenRouter.
+    try:
+        from runner.evaluators.ragas_evaluator import _build_ragas_llm
+        ragas_llm = _build_ragas_llm()
+    except Exception:
+        ragas_llm = None
 
     metric_map = {
         "faithfulness": faithfulness,
@@ -596,6 +778,9 @@ def _run_ragas(
         "ground_truth": [tc.ground_truth or ""],
     }
     dataset = Dataset.from_dict(data)
-    result = ragas_evaluate(dataset=dataset, metrics=active_metrics)
+    kwargs = {"dataset": dataset, "metrics": active_metrics}
+    if ragas_llm is not None:
+        kwargs["llm"] = ragas_llm
+    result = ragas_evaluate(**kwargs)
     scores = result.to_pandas().iloc[0].to_dict()
     return {k: float(v) for k, v in scores.items() if k in metric_map}

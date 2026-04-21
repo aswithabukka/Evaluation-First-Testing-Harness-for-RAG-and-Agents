@@ -163,6 +163,9 @@ class ClassificationEvaluator:
             auc_roc = self._auc_roc(predicted_probs, true_binary)
             pr_auc = self._pr_auc(predicted_probs, true_binary)
 
+        confusion = self._confusion_matrix(all_pred_sets, all_true_sets)
+        mcc = self._matthews_correlation(all_pred_sets, all_true_sets)
+
         return {
             "precision": total_precision / n,
             "recall": total_recall / n,
@@ -172,6 +175,8 @@ class ClassificationEvaluator:
             "micro_f1": micro_f1,
             "weighted_f1": weighted_f1,
             "cohens_kappa": kappa,
+            "matthews_corrcoef": mcc,
+            "confusion_matrix": confusion,
             "auc_roc": auc_roc,
             "pr_auc": pr_auc,
         }
@@ -318,6 +323,70 @@ class ClassificationEvaluator:
         if pe == 1.0:
             return 1.0
         return (po - pe) / (1.0 - pe)
+
+    # ------------------------------------------------------------------
+    # Confusion matrix (single-label; multi-label collapses to first sorted label)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _confusion_matrix(
+        pred_sets: list[set[str]], true_sets: list[set[str]]
+    ) -> dict:
+        """Return a nested dict confusion matrix: {true_label: {pred_label: count}}.
+
+        Rows are ground-truth labels; columns are predicted. Empty sets are
+        bucketed under the string "<none>"."""
+        matrix: dict[str, dict[str, int]] = {}
+        all_labels: set[str] = set()
+        for p, t in zip(pred_sets, true_sets):
+            pl = sorted(p)[0] if p else "<none>"
+            tl = sorted(t)[0] if t else "<none>"
+            all_labels.add(pl)
+            all_labels.add(tl)
+            matrix.setdefault(tl, {}).setdefault(pl, 0)
+            matrix[tl][pl] += 1
+        # Normalise — every row has every column, zero-filled.
+        for row in matrix.values():
+            for lbl in all_labels:
+                row.setdefault(lbl, 0)
+        return matrix
+
+    # ------------------------------------------------------------------
+    # Matthews Correlation Coefficient (multi-class)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _matthews_correlation(
+        cls, pred_sets: list[set[str]], true_sets: list[set[str]]
+    ) -> float:
+        """Multi-class MCC. Balanced measure; +1 perfect, 0 chance, -1 inverse.
+
+        Preferred over accuracy on imbalanced data (Chicco & Jurman, 2020)."""
+        if not pred_sets:
+            return 0.0
+        pred = [sorted(p)[0] if p else "" for p in pred_sets]
+        true = [sorted(t)[0] if t else "" for t in true_sets]
+        n = len(pred)
+        labels = sorted(set(pred) | set(true))
+        k = len(labels)
+        if k < 2:
+            return 0.0
+
+        idx = {l: i for i, l in enumerate(labels)}
+        c = [[0] * k for _ in range(k)]
+        for p, t in zip(pred, true):
+            c[idx[t]][idx[p]] += 1
+
+        tk = [sum(c[i]) for i in range(k)]        # true-count per class
+        pk = [sum(c[i][j] for i in range(k)) for j in range(k)]  # pred-count per class
+        correct = sum(c[i][i] for i in range(k))
+
+        num = correct * n - sum(tk[i] * pk[i] for i in range(k))
+        den_t = n * n - sum(pk[i] * pk[i] for i in range(k))
+        den_p = n * n - sum(tk[i] * tk[i] for i in range(k))
+        if den_t <= 0 or den_p <= 0:
+            return 0.0
+        return num / ((den_t ** 0.5) * (den_p ** 0.5))
 
     # ------------------------------------------------------------------
     # AUC-ROC and PR-AUC (binary classification)

@@ -77,6 +77,31 @@ export interface EvaluationRun {
   notes: string | null;
   /** Structured pipeline config captured at run time */
   pipeline_config: Record<string, unknown> | null;
+  /** Reproducibility manifest: evaluator versions, prompt hashes, seeds, libs. */
+  manifest?: RunManifest | null;
+  manifest_fingerprint?: string | null;
+  /** Cost + time budget outcome. Null when no budget was configured. */
+  budget_summary?: BudgetSummary | null;
+}
+
+export interface RunManifest {
+  version: number;
+  sealed_at: number | null;
+  commit_sha: string | null;
+  evaluators: Array<{ name: string; version: string; class?: string }>;
+  prompts: Record<string, { model: string; params: Record<string, unknown> }>;
+  libraries: Record<string, string>;
+  env: { python?: string; platform?: string; machine?: string };
+  seeds: Record<string, number>;
+}
+
+export interface BudgetSummary {
+  spent_usd: number;
+  max_usd: number | null;
+  elapsed_seconds: number;
+  max_seconds: number | null;
+  exceeded: boolean;
+  exceeded_reason: string | null;
 }
 
 export interface EvaluationResult {
@@ -141,20 +166,31 @@ export interface RegressionDiff {
   gate_blocked: boolean;
 }
 
+export interface MetricFailure {
+  metric: string;
+  actual: number;
+  threshold: number;
+  delta: number;
+  // Significance-aware gate fields (nullable for pass_rate, where there's
+  // no per-case distribution to bootstrap).
+  ci_lower?: number | null;
+  ci_upper?: number | null;
+  p_value?: number | null;
+  sample_size?: number;
+  baseline_size?: number;
+  reason?: string;
+}
+
 export interface GateDecision {
   passed: boolean | null;
   run_id: string;
-  metric_failures: Array<{
-    metric: string;
-    actual: number;
-    threshold: number;
-    delta: number;
-  }>;
+  metric_failures: MetricFailure[];
   rule_failures: Array<{
     result_id: string;
     test_case_id: string;
     rules_detail: unknown;
   }>;
+  baseline_run_id?: string | null;
 }
 
 // Production traffic types

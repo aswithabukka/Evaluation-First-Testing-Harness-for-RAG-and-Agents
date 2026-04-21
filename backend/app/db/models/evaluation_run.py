@@ -60,6 +60,16 @@ class EvaluationRun(Base):
     # Cost tracking
     total_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Reproducibility manifest — evaluator versions, prompt hashes, library
+    # versions, seeds, git commit. Written by runner.manifest.Manifest in the
+    # Celery worker. Two runs with the same fingerprint should produce the
+    # same gate decisions up to LLM non-determinism.
+    manifest: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    manifest_fingerprint: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True
+    )
+    # Budget outcome — cost + latency ceilings and whether they were exceeded.
+    budget_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Relationships
     test_set: Mapped["TestSet"] = relationship(  # noqa: F821

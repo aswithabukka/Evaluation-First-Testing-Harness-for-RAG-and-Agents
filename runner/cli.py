@@ -136,15 +136,35 @@ def gate(run_id, config, fail_on_regression):
         decision = resp.json()
 
     passed = decision.get("passed")
+    baseline_id = decision.get("baseline_run_id")
+
     if passed is True:
-        click.echo(f"Release Gate: APPROVED ✓")
+        click.echo("Release Gate: APPROVED")
+        if baseline_id:
+            click.echo(f"  Compared against baseline run {baseline_id}")
         sys.exit(0)
     elif passed is False:
-        click.echo(f"Release Gate: BLOCKED ✗")
+        click.echo("Release Gate: BLOCKED")
+        if baseline_id:
+            click.echo(f"  Baseline: {baseline_id}")
         for failure in decision.get("metric_failures", []):
-            click.echo(
-                f"  - {failure['metric']}: {failure['actual']:.3f} < {failure['threshold']:.3f}"
-            )
+            actual = failure.get("actual")
+            threshold = failure.get("threshold")
+            lo = failure.get("ci_lower")
+            hi = failure.get("ci_upper")
+            p_value = failure.get("p_value")
+            n = failure.get("sample_size") or 0
+            parts = [f"  - {failure['metric']}: point={actual:.3f} threshold={threshold:.3f}"]
+            if lo is not None and hi is not None:
+                parts.append(f"CI[{lo:.3f},{hi:.3f}]")
+            if p_value is not None:
+                parts.append(f"p={p_value:.3f}")
+            if n:
+                parts.append(f"n={n}")
+            click.echo(" ".join(parts))
+            reason = failure.get("reason")
+            if reason:
+                click.echo(f"      reason: {reason}")
         for failure in decision.get("rule_failures", []):
             click.echo(f"  - Rule violation on case {failure.get('test_case_id')}")
         if fail_on_regression:
@@ -222,6 +242,59 @@ def report(run_id, config, output_format, output, diff):
             from runner.reporters.json_reporter import write_report
             write_report(report_payload, output_path=output)
             click.echo(f"JSON report written to {output}")
+
+
+@cli.command()
+@click.option(
+    "--gold", "gold_path", required=True,
+    help="JSONL file: {id, query, answer, contexts?, human_score} per line",
+)
+@click.option(
+    "--judge", default="llm_judge", show_default=True,
+    type=click.Choice(["llm_judge", "g_eval"]),
+    help="Which judge to calibrate",
+)
+@click.option(
+    "--metric-key", default="llm_judge", show_default=True,
+    help="Key on MetricScores.scores to compare against human_score",
+)
+@click.option("--model", default="gpt-4o", show_default=True)
+@click.option("--samples", default=1, show_default=True, help="Self-consistency samples")
+@click.option("--min-spearman", type=float, default=None,
+              help="Fail if Spearman correlation < this (for CI gating)")
+def calibrate(gold_path, judge, metric_key, model, samples, min_spearman):
+    """Calibrate an LLM judge against a human-labeled gold file.
+
+    Prints Spearman + Kendall correlation and mean absolute error. Intended
+    to be re-run after model / prompt changes to detect judge drift."""
+    from runner.calibration_harness import calibrate as run_calibration, load_gold
+
+    gold = load_gold(gold_path)
+    click.echo(f"Loaded {len(gold)} gold cases from {gold_path}")
+
+    if judge == "llm_judge":
+        from runner.evaluators.llm_judge_evaluator import LLMJudgeEvaluator
+        evaluator = LLMJudgeEvaluator(model=model, samples=samples)
+    else:
+        from runner.evaluators.geval_evaluator import GEvalEvaluator
+        evaluator = GEvalEvaluator(
+            aspect="overall",
+            description="accuracy, helpfulness, and groundedness",
+            model=model,
+            samples=samples,
+        )
+        metric_key = "g_eval:overall"
+
+    result = run_calibration(evaluator, gold_cases=gold, metric_key=metric_key)
+
+    click.echo(f"n                = {result.n}")
+    click.echo(f"spearman         = {result.spearman:.3f}" if result.spearman is not None else "spearman         = n/a")
+    click.echo(f"kendall_tau      = {result.kendall:.3f}" if result.kendall is not None else "kendall_tau      = n/a")
+    click.echo(f"mean_abs_error   = {result.mean_abs_error:.3f}" if result.mean_abs_error is not None else "mean_abs_error   = n/a")
+
+    if min_spearman is not None and result.spearman is not None and result.spearman < min_spearman:
+        click.echo(f"FAIL: Spearman {result.spearman:.3f} < minimum {min_spearman:.3f}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

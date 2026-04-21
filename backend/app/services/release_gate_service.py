@@ -9,6 +9,19 @@ from app.core.exceptions import NotFoundError
 from app.db.models.evaluation_result import EvaluationResult
 from app.db.models.evaluation_run import EvaluationRun, RunStatus
 from app.db.models.test_case import TestCase
+from app.services._gate_stats import significance_gate
+
+
+# Per-case column on EvaluationResult that corresponds to each summary key.
+# Drives the significance gate: we pull the raw per-case values here and feed
+# them to bootstrap/Mann-Whitney instead of comparing the summary mean alone.
+_METRIC_COLUMNS: dict[str, str] = {
+    "faithfulness": "faithfulness",
+    "answer_relevancy": "answer_relevancy",
+    "context_precision": "context_precision",
+    "context_recall": "context_recall",
+    # pass_rate has no per-case column; handled via a boolean->float fallback below.
+}
 
 
 @dataclass
@@ -17,6 +30,14 @@ class GateFailure:
     actual: float
     threshold: float
     delta: float
+    # New: CI bounds + significance context. ``None`` on the pass_rate path
+    # (no per-case samples) so the JSON shape stays backwards-compatible.
+    ci_lower: float | None = None
+    ci_upper: float | None = None
+    p_value: float | None = None
+    sample_size: int = 0
+    baseline_size: int = 0
+    reason: str = ""
 
 
 @dataclass
@@ -45,26 +66,64 @@ class ReleaseGateService:
         thresholds = run.gate_threshold_snapshot or {}
         summary = run.summary_metrics or {}
 
-        metric_failures = []
-        metric_map = {
-            "faithfulness": summary.get("avg_faithfulness"),
-            "answer_relevancy": summary.get("avg_answer_relevancy"),
-            "context_precision": summary.get("avg_context_precision"),
-            "context_recall": summary.get("avg_context_recall"),
-            "pass_rate": summary.get("pass_rate"),
-        }
+        # Significance-aware gate: for each metric with per-case scores, run
+        # bootstrap CI + Mann-Whitney vs. the last passing baseline. Falls
+        # back to the classic "mean < threshold" check for pass_rate (which
+        # is already a derived scalar).
+        current_results = await self._fetch_results_list(run_id)
+        baseline_run = await self._find_last_passing_baseline(run)
+        baseline_results = (
+            await self._fetch_results_list(baseline_run.id) if baseline_run else []
+        )
 
-        for metric, actual in metric_map.items():
+        metric_failures: list[GateFailure] = []
+
+        for metric, column in _METRIC_COLUMNS.items():
             threshold = thresholds.get(metric)
-            if actual is not None and threshold is not None and actual < threshold:
+            if threshold is None:
+                continue
+            current_vals = [getattr(r, column) for r in current_results]
+            current_vals = [v for v in current_vals if v is not None]
+            if not current_vals:
+                continue
+            baseline_vals = [getattr(r, column) for r in baseline_results]
+            baseline_vals = [v for v in baseline_vals if v is not None]
+
+            decision = significance_gate(
+                current_vals,
+                baseline=baseline_vals or None,
+                threshold=threshold,
+                higher_is_better=True,
+            )
+            if not decision.passed:
                 metric_failures.append(
                     GateFailure(
                         metric=metric,
-                        actual=actual,
+                        actual=decision.point_estimate,
                         threshold=threshold,
-                        delta=actual - threshold,
+                        delta=decision.point_estimate - threshold,
+                        ci_lower=decision.ci_lower,
+                        ci_upper=decision.ci_upper,
+                        p_value=decision.p_value,
+                        sample_size=decision.sample_size,
+                        baseline_size=decision.baseline_size,
+                        reason=decision.reason,
                     )
                 )
+
+        # pass_rate: no per-case raw values — keep the classic check.
+        pr_actual = summary.get("pass_rate")
+        pr_threshold = thresholds.get("pass_rate")
+        if pr_actual is not None and pr_threshold is not None and pr_actual < pr_threshold:
+            metric_failures.append(
+                GateFailure(
+                    metric="pass_rate",
+                    actual=pr_actual,
+                    threshold=pr_threshold,
+                    delta=pr_actual - pr_threshold,
+                    reason=f"pass_rate {pr_actual:.3f} < threshold {pr_threshold:.3f}",
+                )
+            )
 
         # Check for zero-tolerance rule failures
         rule_failures_result = await self.db.execute(
@@ -93,10 +152,17 @@ class ReleaseGateService:
                     "actual": f.actual,
                     "threshold": f.threshold,
                     "delta": f.delta,
+                    "ci_lower": f.ci_lower,
+                    "ci_upper": f.ci_upper,
+                    "p_value": f.p_value,
+                    "sample_size": f.sample_size,
+                    "baseline_size": f.baseline_size,
+                    "reason": f.reason,
                 }
                 for f in metric_failures
             ],
             "rule_failures": rule_failures,
+            "baseline_run_id": str(baseline_run.id) if baseline_run else None,
         }
 
     async def compute_regression_diff(self, run_id: uuid.UUID) -> RegressionDiff:
@@ -218,6 +284,31 @@ class ReleaseGateService:
             select(EvaluationResult).where(EvaluationResult.run_id == run_id)
         )
         return {r.test_case_id: r for r in result.scalars().all()}
+
+    async def _fetch_results_list(self, run_id: uuid.UUID) -> list[EvaluationResult]:
+        result = await self.db.execute(
+            select(EvaluationResult).where(EvaluationResult.run_id == run_id)
+        )
+        return list(result.scalars().all())
+
+    async def _find_last_passing_baseline(
+        self, run: EvaluationRun
+    ) -> EvaluationRun | None:
+        """Most recent completed+passing run for the same test set, excluding
+        the run under evaluation. Used as the comparison group for
+        Mann-Whitney significance testing."""
+        result = await self.db.execute(
+            select(EvaluationRun)
+            .where(
+                EvaluationRun.test_set_id == run.test_set_id,
+                EvaluationRun.id != run.id,
+                EvaluationRun.overall_passed == True,  # noqa: E712
+                EvaluationRun.status == RunStatus.COMPLETED,
+            )
+            .order_by(EvaluationRun.completed_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     @staticmethod
     def _extract_scores(r: EvaluationResult) -> dict[str, float | None]:

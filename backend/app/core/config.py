@@ -19,10 +19,26 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://redis:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
 
-    # LLM for evaluation
+    # ── LLM for evaluation ───────────────────────────────────────────────
+    # EITHER key unlocks the LLM-based evaluators. When both are set,
+    # LLM_PROVIDER picks the winner.
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
     EVAL_LLM_PROVIDER: str = "openai"  # openai | azure | anthropic
+
+    # OpenRouter — OpenAI-compatible, unlocks DeepSeek V3, Qwen 3, Kimi K2,
+    # QwQ, Claude, and more through one key. Auto-detected by the shared
+    # LLMClient when set. See runner/evaluators/_llm.py::get_default_client.
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+
+    # Provider selector when both OPENAI_API_KEY and OPENROUTER_API_KEY are
+    # set. Values: "" (auto) | "openai" | "openrouter".
+    LLM_PROVIDER: str = ""
+
+    # Default judge model for LLM-based evaluators. ``provider/model`` style
+    # (e.g. ``deepseek/deepseek-chat``) implies OpenRouter.
+    LLM_DEFAULT_MODEL: str = ""
 
     # Release Gate defaults
     DEFAULT_FAITHFULNESS_THRESHOLD: float = 0.7

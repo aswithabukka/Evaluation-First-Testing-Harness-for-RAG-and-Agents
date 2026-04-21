@@ -17,6 +17,8 @@ import {
   SYSTEM_TYPE_ICONS,
   SYSTEM_TYPE_COLORS,
 } from "@/lib/system-metrics";
+import { GateDecisionPanel } from "@/components/runs/GateDecisionPanel";
+import { ManifestPanel } from "@/components/runs/ManifestPanel";
 import type { EvaluationResult, RegressionItem, RunStatus, TestCase, SystemType } from "@/types";
 
 const statusVariant: Record<RunStatus, "green" | "red" | "yellow" | "blue" | "orange"> = {
@@ -259,6 +261,14 @@ export default function RunDetailPage() {
     diff?.baseline_run_id ? `baseline-run-${diff.baseline_run_id}` : null,
     () => api.runs.get(diff!.baseline_run_id!)
   );
+  // Significance-aware gate decision (CI bounds + p-value). Only valid once
+  // the run has a terminal status.
+  const { data: gate } = useSWR(
+    run?.status === "completed" || run?.status === "gate_blocked"
+      ? `gate-${id}`
+      : null,
+    () => api.metrics.gate(id)
+  );
 
   if (runLoading) return <PageLoader />;
   if (!run) return <p className="p-6 text-gray-500">Run not found.</p>;
@@ -339,6 +349,18 @@ export default function RunDetailPage() {
           {" · "}Branch: {run.git_branch ?? "—"} · Commit: {run.git_commit_sha?.slice(0, 7) ?? "—"} · Started {formatDate(run.started_at)}
         </p>
       </div>
+
+      {/* Release gate + reproducibility (side by side on wide screens) */}
+      {(run.status === "completed" || run.status === "gate_blocked") && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {gate ? <GateDecisionPanel gate={gate} /> : null}
+          <ManifestPanel
+            manifest={run.manifest}
+            fingerprint={run.manifest_fingerprint}
+            budget={run.budget_summary}
+          />
+        </div>
+      )}
 
       {/* Pipeline & Run Info */}
       <Card>

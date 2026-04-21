@@ -14,6 +14,10 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      - LLM_PROVIDER=${LLM_PROVIDER:-}
+      - LLM_DEFAULT_MODEL=${LLM_DEFAULT_MODEL:-}
       - PYTHONPATH=/app
       - DEBUG=true
       # Production features
@@ -44,6 +48,10 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      - LLM_PROVIDER=${LLM_PROVIDER:-}
+      - LLM_DEFAULT_MODEL=${LLM_DEFAULT_MODEL:-}
       - PYTHONPATH=/app
       # Production features
       - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}

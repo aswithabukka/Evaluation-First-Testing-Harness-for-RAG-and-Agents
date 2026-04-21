@@ -54,6 +54,11 @@ class EvaluationRunResponse(BaseModel):
     summary_metrics: dict[str, Any] | None
     notes: str | None
     pipeline_config: dict[str, Any] | None
+    # Reproducibility — evaluator versions, prompt hashes, library versions.
+    manifest: dict[str, Any] | None = None
+    manifest_fingerprint: str | None = None
+    # Budget outcome — None when no budget was configured.
+    budget_summary: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 
