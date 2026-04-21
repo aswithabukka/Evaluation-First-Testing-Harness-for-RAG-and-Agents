@@ -178,7 +178,7 @@ All of that is infrastructure around the metrics. That's what I built.
 
 ## 4. Component Deep-Dives
 
-### 4.1 The Evaluator Family (13 evaluators)
+### 4.1 The Evaluator Family (19 evaluators)
 
 **The problem they solve:** Different AI system types (RAG, agents, chatbots, search, classification) need different metrics. A one-size-fits-all "accuracy" number is useless.
 

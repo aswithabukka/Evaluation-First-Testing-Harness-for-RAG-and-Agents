@@ -50,3 +50,10 @@ redis-data/
 backend/celerybeat-schedule
 frontend/tsconfig.tsbuildinfo
 frontend/next-env.d.ts
+
+
+# Microsoft Office lock files
+~$*.docx
+~$*.xlsx
+~$*.pptx
+.DS_Store

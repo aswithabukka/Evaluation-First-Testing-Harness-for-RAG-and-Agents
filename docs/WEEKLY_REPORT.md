@@ -48,7 +48,7 @@ Evaluates conversational AI systems that maintain coherent dialogue across multi
 ### 3.4 Search Engines
 Evaluates information retrieval systems that return ranked document lists. Metrics include NDCG@k (ranking quality), MAP@k (mean average precision), MRR (mean reciprocal rank), Precision@k, and Recall@k.
 
-The system includes 13 evaluators in total, covering RAG metrics (via Ragas), rule-based evaluation (9 rule types including substring checks, regex matching, tool call assertions, hallucination risk thresholds, and refusal detection), LLM-as-Judge scoring (GPT-4o free-form quality assessment), and specialized evaluators for code generation, classification, translation, and safety.
+The system includes 19 evaluators in total, covering RAG metrics (via Ragas), rule-based evaluation (16 rule types including substring checks, regex matching, tool call assertions, hallucination risk thresholds, and refusal detection), LLM-as-Judge scoring (GPT-4o free-form quality assessment), and specialized evaluators for code generation, classification, translation, and safety.
 
 ---
 

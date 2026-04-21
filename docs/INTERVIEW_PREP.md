@@ -6,7 +6,7 @@
 
 ## 1. Elevator Pitch (30 seconds)
 
-"I built a production-grade evaluation platform that lets teams test and quality-gate four types of AI systems — RAG pipelines, tool-calling agents, multi-turn chatbots, and search engines — before they ship. It works like CI/CD for LLMs: every pipeline change is automatically evaluated with 13 specialized scoring engines, gated against configurable thresholds, and if metrics regress, the deploy is blocked and Slack gets notified. The whole stack is FastAPI, Celery, PostgreSQL, and a Next.js dashboard with 10 interactive pages."
+"I built a production-grade evaluation platform that lets teams test and quality-gate four types of AI systems — RAG pipelines, tool-calling agents, multi-turn chatbots, and search engines — before they ship. It works like CI/CD for LLMs: every pipeline change is automatically evaluated with 19 specialized scoring engines, gated against configurable thresholds, and if metrics regress, the deploy is blocked and Slack gets notified. The whole stack is FastAPI, Celery, PostgreSQL, and a Next.js dashboard with 10 interactive pages."
 
 ---
 
@@ -189,7 +189,7 @@ PostgreSQL JSONB is used for 5 different column types because the schema needs t
 | 2 | `AgentEvaluator` | Agent | Tool call F1, tool call accuracy, goal accuracy, step efficiency |
 | 3 | `ConversationEvaluator` | Chatbot | Coherence, knowledge retention, role adherence, response relevance |
 | 4 | `RankingEvaluator` | Search | NDCG@k, MAP@k, MRR, precision@k, recall@k |
-| 5 | `RuleEvaluator` | All | 9 rule types: must_contain, must_not_contain, regex, tool assertions, hallucination risk, refusal detection, custom plugins |
+| 5 | `RuleEvaluator` | All | 16 rule types: must_contain, must_not_contain, regex, tool assertions, hallucination risk, refusal detection, custom plugins |
 | 6 | `LLMJudgeEvaluator` | All | GPT-4o free-form quality scoring (0–1) with reasoning |
 | 7 | `SimilarityEvaluator` | General | ROUGE-L, BLEU for text similarity |
 | 8 | `ClassificationEvaluator` | Classification | Accuracy, F1, precision, recall |
@@ -199,7 +199,7 @@ PostgreSQL JSONB is used for 5 different column types because the schema needs t
 | 12 | `DeepEvalEvaluator` | All | Third-party DeepEval integration |
 | 13 | `MultiTurnAgentEvaluator` | Agent | Multi-turn tool consistency, goal completion across turns |
 
-### Failure Rule Engine — 9 built-in rule types
+### Failure Rule Engine — 16 built-in rule types
 
 | Rule | What It Enforces | Example |
 |------|-----------------|---------|
@@ -487,6 +487,6 @@ PR opened/updated
 
 ## 18. Project Timeline & Scope
 
-- **Phase 1**: Core platform — 4 AI system types, 13 evaluators, adapter pattern, quality gates, CI/CD workflows, 8 dashboard pages, playground, production ingestion
+- **Phase 1**: Core platform — 4 AI system types, 19 evaluators, adapter pattern, quality gates, CI/CD workflows, 8 dashboard pages, playground, production ingestion
 - **Phase 2**: 7 power features — Slack alerts, CSV/JSON export, user feedback, LLM test case generation, side-by-side comparison, multi-model A/B testing, dark mode
 - **Total**: 26+ files modified/created in Phase 2 alone, 1,302 lines added

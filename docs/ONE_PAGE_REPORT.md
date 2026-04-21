@@ -24,7 +24,7 @@ I also researched evaluation frameworks (Ragas, DeepEval), LLM-as-Judge patterns
 
 Using insights from the research phase, I built and deployed the full evaluation platform:
 
-- **Backend**: FastAPI server with 25+ REST endpoints, Celery distributed task queue, PostgreSQL with JSONB-based flexible metric storage, and Redis as the message broker — supporting 4 AI system types and 13 evaluators.
+- **Backend**: FastAPI server with 25+ REST endpoints, Celery distributed task queue, PostgreSQL with JSONB-based flexible metric storage, and Redis as the message broker — supporting 4 AI system types and 19 evaluators (G-Eval, claim-level citation, agent trajectory similarity, ECE calibration, and more — see EVALUATORS.md).
 - **Seven new features implemented**: Slack/Webhook Alerts (rich Block Kit notifications on quality gate failures), CSV/JSON Export (full evaluation result downloads), User Feedback Collection (thumbs up/down ratings with aggregated statistics), LLM-Powered Test Case Generation (GPT-4o generates system-type-specific test cases), Side-by-Side Run Comparison (compare 2-4 evaluation runs visually), Multi-Model A/B Testing (batch-trigger runs across different model configurations), and Dark Mode.
 - **Frontend**: Next.js 14 dashboard with 10 pages, real-time data polling, interactive metric visualizations, and a playground for live AI system testing.
 - **Infrastructure**: 6 Docker containers orchestrated via Docker Compose, with GitHub Actions CI/CD pipelines.

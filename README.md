@@ -749,7 +749,7 @@ rag-eval-harness/
 │   │   ├── langchain_adapter.py     # Framework: LangChain
 │   │   ├── llamaindex_adapter.py    # Framework: LlamaIndex
 │   │   └── ...                       # 9 more system adapters
-│   ├── evaluators/                   # 13 scoring engines
+│   ├── evaluators/                   # 19 scoring engines (see EVALUATORS.md)
 │   │   ├── ragas_evaluator.py       # Ragas metrics
 │   │   ├── agent_evaluator.py       # Tool call F1, goal accuracy
 │   │   ├── conversation_evaluator.py # Coherence, role adherence
