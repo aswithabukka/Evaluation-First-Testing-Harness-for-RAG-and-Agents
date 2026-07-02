@@ -55,6 +55,17 @@ def run(config, test_set_id, commit_sha, branch, pr_number, pipeline_version, ti
         click.echo("ERROR: No test set ID provided. Set test_set.id in rageval.yaml or use --test-set.")
         sys.exit(1)
 
+    # The adapter section of rageval.yaml travels to the worker as
+    # pipeline_config — without it the worker silently falls back to the
+    # default demo adapter for the test set's system type.
+    pipeline_config = None
+    if cfg.adapter.module and cfg.adapter.class_name:
+        pipeline_config = {
+            "adapter_module": cfg.adapter.module,
+            "adapter_class": cfg.adapter.class_name,
+            **cfg.adapter.config,
+        }
+
     payload = {
         "test_set_id": effective_test_set_id,
         "pipeline_version": pipeline_version or os.getenv("PIPELINE_VERSION"),
@@ -64,6 +75,7 @@ def run(config, test_set_id, commit_sha, branch, pr_number, pipeline_version, ti
         "triggered_by": "ci",
         "thresholds": cfg.thresholds if cfg.thresholds else None,
         "metrics": cfg.metrics,
+        "pipeline_config": pipeline_config,
     }
 
     click.echo(f"Triggering evaluation run for test set {effective_test_set_id}...")

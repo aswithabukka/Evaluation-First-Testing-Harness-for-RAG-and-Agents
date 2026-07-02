@@ -102,9 +102,40 @@ jobs:
           sleep 3
           echo "Celery worker started"
 
+      - name: Seed CI smoke test set
+        env:
+          SYNC_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rageval
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/rageval
+        working-directory: backend
+        run: |
+          TEST_SET_ID=$(python -m app.scripts.seed_ci_smoke | tail -1)
+          echo "TEST_SET_ID=$TEST_SET_ID" >> "$GITHUB_ENV"
+          echo "Seeded CI smoke test set: $TEST_SET_ID"
+
+      # CI runs a fully offline evaluation: the StaticQAAdapter answers from
+      # a built-in KB and the gate decides on failure rules + pass_rate. No
+      # OPENAI_API_KEY needed. LLM-based metrics (Ragas, citation, llm_judge)
+      # run in real deployments, not here.
+      - name: Write CI evaluation config
+        run: |
+          cat > rageval.yaml <<EOF
+          adapter:
+            module: runner.adapters.static_qa
+            class: StaticQAAdapter
+          test_set:
+            id: "${TEST_SET_ID}"
+          thresholds:
+            pass_rate: 0.9
+          metrics:
+            - rule_evaluation
+            - safety
+          api:
+            url: "http://localhost:8000"
+          EOF
+          cat rageval.yaml
+
       - name: Execute evaluation run
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
