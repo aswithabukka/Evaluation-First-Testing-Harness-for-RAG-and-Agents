@@ -373,7 +373,7 @@ The gate response now carries `ci_lower`, `ci_upper`, `p_value`, `sample_size`, 
 | `DEFAULT_CONTEXT_PRECISION_THRESHOLD` | No | `0.6` |
 | `DEFAULT_CONTEXT_RECALL_THRESHOLD` | No | `0.6` |
 | `DEFAULT_PASS_RATE_THRESHOLD` | No | `0.8` |
-| `API_KEYS` | No | — (comma-separated keys for production ingestion endpoint) |
+| `API_KEYS` | No | — (comma-separated keys; protects ingestion + all LLM-spend endpoints: `POST /runs`, `/runs/multi`, `/test-sets/{id}/generate`, `/playground/interact`, playground document upload. Empty = auth disabled for local dev) |
 | `SAMPLING_RATE` | No | `0.2` (20% of production traffic sampled) |
 | `SAMPLING_ERROR_RATE` | No | `1.0` (100% of error traffic sampled) |
 | `ALERT_WEBHOOK_URL` | No | — (Slack/webhook URL for quality alerts) |
@@ -463,6 +463,12 @@ Central config mapping 9 system types to their metrics, colors, icons, and label
 | **Side-by-Side Comparison** | — | `runs/page.tsx` — checkbox selection; `runs/compare/page.tsx` — comparison view | `Suspense` boundary for `useSearchParams()`; parallel SWR fetching |
 | **Multi-Model Comparison** | `evaluation_runs.py` — `POST /runs/multi` with `MultiRunRequest` (2–6 configs) | `test-sets/[id]/page.tsx` — CompareModelsModal | Creates N runs, returns `compare_url` for redirect |
 | **Dark Mode** | — | `theme.tsx` — ThemeProvider; `layout.tsx` — wraps children; `globals.css` — dark base; Sidebar, Card, Badge — `dark:` variants | `darkMode: "class"` in `tailwind.config.ts`; `localStorage` + system preference |
+
+### API proxy (frontend → backend)
+
+- The browser never calls the FastAPI backend directly. All requests go through the same-origin Next.js route handler at `frontend/src/app/api/backend/[...path]/route.ts`, which forwards to the backend and injects `X-API-Key` server-side.
+- Frontend server env vars (never exposed to the browser): `API_URL` (backend base URL, default `http://localhost:8000/api/v1`; `http://api:8000/api/v1` in Docker) and `API_KEY` (optional key added to proxied requests).
+- Do NOT reintroduce `NEXT_PUBLIC_API_KEY` — `NEXT_PUBLIC_` vars are inlined into the public JS bundle, which leaks the key. `NEXT_PUBLIC_API_URL` remains only as an escape hatch to bypass the proxy in keyless setups.
 
 ### Docker notes
 

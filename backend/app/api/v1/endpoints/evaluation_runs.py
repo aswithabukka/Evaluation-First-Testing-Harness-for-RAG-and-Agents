@@ -11,6 +11,7 @@ from app.api.v1.schemas.evaluation_run import (
     EvaluationRunResponse,
     RunStatusResponse,
 )
+from app.core.auth import require_api_key
 from app.db.session import get_db
 from app.services.evaluation_service import EvaluationService
 from app.services.release_gate_service import ReleaseGateService
@@ -36,6 +37,7 @@ def get_gate_service(db: AsyncSession = Depends(get_db)) -> ReleaseGateService:
 async def trigger_evaluation_run(
     payload: EvaluationRunCreate,
     service: Annotated[EvaluationService, Depends(get_eval_service)],
+    _api_key: str | None = Depends(require_api_key),
 ):
     """Trigger a new async evaluation run. Returns immediately with run_id."""
     return await service.create_run(payload)
@@ -45,6 +47,7 @@ async def trigger_evaluation_run(
 async def trigger_multi_run(
     payload: MultiRunRequest,
     service: Annotated[EvaluationService, Depends(get_eval_service)],
+    _api_key: str | None = Depends(require_api_key),
 ):
     """Trigger multiple evaluation runs with different pipeline configs for comparison."""
     run_ids = []

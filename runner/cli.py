@@ -22,6 +22,9 @@ def _api_url(config) -> str:
 def _headers(config) -> dict:
     h = {"Content-Type": "application/json"}
     if config.api.api_key:
+        # X-API-Key is what the backend's require_api_key dependency reads;
+        # Bearer is kept for reverse proxies that authenticate upstream.
+        h["X-API-Key"] = config.api.api_key
         h["Authorization"] = f"Bearer {config.api.api_key}"
     return h
 

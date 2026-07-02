@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.schemas.test_set import TestSetCreate, TestSetResponse, TestSetUpdate
+from app.core.auth import require_api_key
 from app.db.session import get_db
 from app.services.test_set_service import TestSetService
 
@@ -75,6 +76,7 @@ async def export_test_set(
 async def generate_test_cases(
     test_set_id: uuid.UUID,
     payload: GenerateRequest,
+    _api_key: str | None = Depends(require_api_key),
 ):
     """Generate test cases using an LLM. Returns task_id for polling."""
     from app.workers.tasks.generation_tasks import generate_test_cases as gen_task

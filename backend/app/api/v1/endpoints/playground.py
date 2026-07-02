@@ -14,9 +14,10 @@ import time
 import uuid
 from threading import Lock
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
 
 from app.api.v1.schemas.ingestion import ProductionLogIngest
+from app.core.auth import require_api_key
 from app.api.v1.schemas.playground import (
     DocumentListResponse,
     DocumentUploadRequest,
@@ -193,7 +194,11 @@ async def _ingest_playground_interaction(
 
 
 @router.post("/interact", response_model=PlaygroundResponse)
-async def interact(req: PlaygroundRequest, background_tasks: BackgroundTasks):
+async def interact(
+    req: PlaygroundRequest,
+    background_tasks: BackgroundTasks,
+    _api_key: str | None = Depends(require_api_key),
+):
     if req.system_type not in SYSTEM_CONFIGS:
         raise HTTPException(400, f"Unknown system type: {req.system_type}")
 
@@ -253,7 +258,10 @@ async def reset_session(session_id: str):
 # ── RAG Document Upload ──────────────────────────────────────────────
 
 @router.post("/rag/documents", response_model=DocumentUploadResponse)
-async def upload_documents(req: DocumentUploadRequest):
+async def upload_documents(
+    req: DocumentUploadRequest,
+    _api_key: str | None = Depends(require_api_key),
+):
     """Add user documents to the RAG adapter's search corpus."""
     try:
         adapter, _ = _get_adapter("rag")
@@ -301,7 +309,10 @@ def _extract_text_from_pdf(content: bytes) -> str:
 
 
 @router.post("/rag/upload-files", response_model=DocumentUploadResponse)
-async def upload_files(files: list[UploadFile] = File(...)):
+async def upload_files(
+    files: list[UploadFile] = File(...),
+    _api_key: str | None = Depends(require_api_key),
+):
     """Upload files (PDF, TXT, MD, etc.) to the RAG adapter's corpus.
 
     PDFs are parsed server-side; text files are read directly.

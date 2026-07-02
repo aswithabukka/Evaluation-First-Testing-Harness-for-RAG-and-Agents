@@ -15,10 +15,11 @@ import type {
   TestSet,
 } from "@/types";
 
-const BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
-
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+// All browser requests go through the same-origin Next.js proxy
+// (src/app/api/backend/[...path]/route.ts), which injects the API key
+// server-side. Set NEXT_PUBLIC_API_URL only to bypass the proxy and hit
+// the backend directly (e.g. a keyless local setup).
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api/backend";
 
 class ApiError extends Error {
   constructor(
@@ -32,7 +33,6 @@ class ApiError extends Error {
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(API_KEY ? { "X-API-Key": API_KEY } : {}),
   };
   const res = await fetch(`${BASE_URL}${path}`, {
     headers,
@@ -196,12 +196,8 @@ export const api = {
       for (const file of files) {
         formData.append("files", file);
       }
-      const headers: Record<string, string> = {
-        ...(API_KEY ? { "X-API-Key": API_KEY } : {}),
-      };
       const res = await fetch(`${BASE_URL}/playground/rag/upload-files`, {
         method: "POST",
-        headers,
         body: formData,
       });
       if (!res.ok) {

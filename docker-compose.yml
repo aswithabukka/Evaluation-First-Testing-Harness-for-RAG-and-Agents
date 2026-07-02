@@ -120,8 +120,10 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
-      - NEXT_PUBLIC_API_KEY=${API_KEYS:-}
+      # Server-side only — read by the Next.js proxy route at runtime.
+      # The API key is never exposed to the browser bundle.
+      - API_URL=http://api:8000/api/v1
+      - API_KEY=${API_KEYS:-}
       - HOSTNAME=0.0.0.0
     depends_on:
       - api
