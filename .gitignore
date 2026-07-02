@@ -57,3 +57,13 @@ frontend/next-env.d.ts
 ~$*.xlsx
 ~$*.pptx
 .DS_Store
+
+# Office lock files
+~$*
+
+# Personal prep notes — keep out of the public repo
+INTERVIEW_*
+PROJECT_EXPLAINED*
+
+# Local Claude Code settings
+.claude/
