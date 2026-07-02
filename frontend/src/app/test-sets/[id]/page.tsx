@@ -2,7 +2,7 @@
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import useSWR, { useSWRConfig } from "swr";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { formatDate, truncate } from "@/lib/utils";
 import { Badge } from "@/components/ui/Badge";
@@ -125,6 +125,14 @@ function TriggerRunModal({ testSetId, systemType, onClose }: { testSetId: string
 
 /* ─── Main page ─────────────────────────────────────────────────────── */
 export default function TestSetDetailPage() {
+  return (
+    <Suspense fallback={<PageLoader />}>
+      <TestSetDetailPageInner />
+    </Suspense>
+  );
+}
+
+function TestSetDetailPageInner() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
