@@ -4,8 +4,9 @@ Celery evaluation task.
 Runs the full evaluation loop for a given EvaluationRun:
 1. Boots the pipeline adapter (dynamic — reads adapter_module/adapter_class from pipeline_config)
 2. For each test case: calls the pipeline → gets real answer + retrieved contexts
-3. Scores results with system-specific evaluators (Ragas for RAG, AgentEvaluator,
-   ConversationEvaluator, RankingEvaluator for their respective system types)
+3. Scores results with system-specific evaluators (Ragas for RAG; Agent,
+   Conversation, Ranking, Code, Classification, Similarity, and Translation
+   evaluators for their respective system types)
 4. Stores EvaluationResult rows and MetricsHistory entries
 5. Updates the run status and summary_metrics
 """
@@ -214,6 +215,30 @@ def run_evaluation(self, run_id: str, metrics: list[str]) -> dict:
                 except Exception as exc:
                     print(f"[warn] Calibration evaluation failed: {exc}")
 
+            # ── Batch-level classification metrics ────────────────────────
+            # Macro/micro/weighted F1, Cohen's kappa, and MCC need the full
+            # label distribution, so they can't be computed per case.
+            classification_scores: dict[str, float] = {}
+            if system_type == "classification":
+                try:
+                    from runner.evaluators.classification_evaluator import ClassificationEvaluator
+                    preds: list = []
+                    exps: list = []
+                    for tc_, r_ in zip(test_cases, results):
+                        expected = tc_.expected_labels or tc_.expected_output or tc_.ground_truth
+                        if expected and r_.raw_output:
+                            preds.append(r_.raw_output.strip())
+                            exps.append(expected)
+                    if preds:
+                        batch_scores = ClassificationEvaluator().evaluate_batch(preds, exps)
+                        classification_scores = {
+                            k: float(v) for k, v in batch_scores.items()
+                            if isinstance(v, (int, float)) and not isinstance(v, bool)
+                            and not math.isnan(float(v)) and not math.isinf(float(v))
+                        }
+                except Exception as exc:
+                    print(f"[warn] Batch classification metrics failed: {exc}")
+
             # ── Summary metrics ───────────────────────────────────────────
             def _clean(v):
                 if v is None:
@@ -265,6 +290,12 @@ def run_evaluation(self, run_id: str, metrics: list[str]) -> dict:
                     if avg_val is not None:
                         summary[f"avg_{key}"] = avg_val
 
+            # Batch-level classification metrics override the naive per-case
+            # averages (identical for precision/recall/f1/accuracy) and add
+            # macro/micro/weighted F1, kappa, and MCC on top.
+            for k, v in classification_scores.items():
+                summary[f"avg_{k}"] = v
+
             # ── Gate evaluation ───────────────────────────────────────────
             thresholds = run.gate_threshold_snapshot or {}
             gate_passed = True
@@ -298,6 +329,33 @@ def run_evaluation(self, run_id: str, metrics: list[str]) -> dict:
                     ("map_at_k", "avg_map_at_k"),
                     ("mrr", "avg_mrr"),
                     ("recall_at_k", "avg_recall_at_k"),
+                ])
+            elif system_type == "code_gen":
+                gate_checks.extend([
+                    ("syntax_valid", "avg_syntax_valid"),
+                    ("security_score", "avg_security_score"),
+                    ("pass_at_k", "avg_pass_at_k"),
+                ])
+            elif system_type == "classification":
+                gate_checks.extend([
+                    ("accuracy", "avg_accuracy"),
+                    ("f1", "avg_f1"),
+                    ("macro_f1", "avg_macro_f1"),
+                    ("precision", "avg_precision"),
+                    ("recall", "avg_recall"),
+                ])
+            elif system_type == "summarization":
+                gate_checks.extend([
+                    ("rouge_l", "avg_rouge_l"),
+                    ("bleu", "avg_bleu"),
+                    ("semantic_similarity", "avg_semantic_similarity"),
+                ])
+            elif system_type == "translation":
+                # TER is lower-is-better and the simple gate loop only
+                # supports higher-is-better thresholds, so it stays out.
+                gate_checks.extend([
+                    ("sacrebleu", "avg_sacrebleu"),
+                    ("chrf_plus_plus", "avg_chrf_plus_plus"),
                 ])
 
             for metric_key, summary_key in gate_checks:
@@ -597,6 +655,101 @@ def _evaluate_test_case(
         except Exception as exc:
             if failure_reason is None:
                 failure_reason = f"Ranking evaluation failed: {exc}"
+
+    elif system_type == "code_gen":
+        # Code evaluator: syntax validity, code-block presence, security scan
+        try:
+            from runner.evaluators.code_evaluator import CodeEvaluator
+            code_eval = CodeEvaluator()
+
+            # Optional unit-test outcomes stored on the test case enable pass@k
+            test_results = None
+            if tc.context and isinstance(tc.context, dict):
+                test_results = tc.context.get("test_results")
+
+            scores = code_eval.evaluate(raw_output or "", test_results=test_results)
+            extended_metrics = {
+                "syntax_valid": 1.0 if scores["syntax_valid"] else 0.0,
+                "has_code_block": 1.0 if scores["has_code_block"] else 0.0,
+                "security_score": _nan_to_none(scores["security_score"]),
+                "security_issue_count": float(len(scores["security_issues"])),
+                "pass_at_k": _nan_to_none(scores["pass_at_k"]),
+            }
+            if manifest is not None:
+                _record_evaluator(manifest, "runner.evaluators.code_evaluator", "CodeEvaluator")
+        except Exception as exc:
+            if failure_reason is None:
+                failure_reason = f"Code evaluation failed: {exc}"
+
+    elif system_type == "classification":
+        # Classification evaluator: per-case precision/recall/F1/accuracy
+        try:
+            from runner.evaluators.classification_evaluator import ClassificationEvaluator
+            cls_eval = ClassificationEvaluator()
+
+            expected = tc.expected_labels or tc.expected_output or tc.ground_truth
+            if expected:
+                scores = cls_eval.evaluate(
+                    predicted_labels=(raw_output or "").strip(),
+                    expected_labels=expected,
+                )
+                extended_metrics = {k: _nan_to_none(v) for k, v in scores.items()}
+                if manifest is not None:
+                    _record_evaluator(manifest, "runner.evaluators.classification_evaluator", "ClassificationEvaluator")
+            else:
+                extended_metrics = {
+                    "precision": None, "recall": None, "f1": None, "accuracy": None,
+                }
+        except Exception as exc:
+            if failure_reason is None:
+                failure_reason = f"Classification evaluation failed: {exc}"
+
+    elif system_type == "summarization":
+        # Similarity evaluator: ROUGE / BLEU / semantic similarity vs reference
+        try:
+            from runner.evaluators.similarity_evaluator import SimilarityEvaluator
+            sim_eval = SimilarityEvaluator(
+                openai_api_key=getattr(settings, "OPENAI_API_KEY", None),
+            )
+
+            reference = tc.expected_output or tc.ground_truth
+            if reference:
+                scores = sim_eval.evaluate(predicted=raw_output or "", reference=reference)
+                extended_metrics = {k: _nan_to_none(v) for k, v in scores.items()}
+                if manifest is not None:
+                    _record_evaluator(manifest, "runner.evaluators.similarity_evaluator", "SimilarityEvaluator")
+            else:
+                extended_metrics = {
+                    "bleu": None, "rouge_1": None, "rouge_2": None, "rouge_l": None,
+                    "bert_score": None, "semantic_similarity": None,
+                }
+        except Exception as exc:
+            if failure_reason is None:
+                failure_reason = f"Similarity evaluation failed: {exc}"
+
+    elif system_type == "translation":
+        # Translation evaluator: sacreBLEU / chrF++ / TER vs reference
+        try:
+            from runner.evaluators.translation_evaluator import TranslationEvaluator
+            trans_eval = TranslationEvaluator()
+
+            reference = tc.expected_output or tc.ground_truth
+            if reference:
+                scores = trans_eval.evaluate(
+                    hypothesis=raw_output or "",
+                    reference=reference,
+                    source=tc.query,
+                )
+                extended_metrics = {k: _nan_to_none(v) for k, v in scores.items()}
+                if manifest is not None:
+                    _record_evaluator(manifest, "runner.evaluators.translation_evaluator", "TranslationEvaluator")
+            else:
+                extended_metrics = {
+                    "sacrebleu": None, "chrf_plus_plus": None, "comet": None, "ter": None,
+                }
+        except Exception as exc:
+            if failure_reason is None:
+                failure_reason = f"Translation evaluation failed: {exc}"
 
     # ── Step 2b: Registry-driven evaluators ────────────────────────────
     # Anything in `metrics` that matches an EVALUATOR_REGISTRY name runs
