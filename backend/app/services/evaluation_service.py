@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import Integer, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.schemas.evaluation_result import EvaluationResultResponse, ResultSummary
@@ -213,7 +213,7 @@ class EvaluationService:
         agg = await self.db.execute(
             select(
                 func.count().label("total"),
-                func.sum(EvaluationResult.passed.cast(int)).label("passed"),
+                func.sum(EvaluationResult.passed.cast(Integer)).label("passed"),
                 func.avg(EvaluationResult.faithfulness).label("avg_faithfulness"),
                 func.avg(EvaluationResult.answer_relevancy).label("avg_answer_relevancy"),
                 func.avg(EvaluationResult.context_precision).label("avg_context_precision"),
