@@ -79,7 +79,7 @@ def run(config, test_set_id, commit_sha, branch, pr_number, pipeline_version, ti
     }
 
     click.echo(f"Triggering evaluation run for test set {effective_test_set_id}...")
-    with httpx.Client(base_url=_api_url(cfg), headers=_headers(cfg), timeout=30) as client:
+    with httpx.Client(base_url=_api_url(cfg), headers=_headers(cfg), follow_redirects=True, timeout=30) as client:
         resp = client.post("/runs", json=payload)
         resp.raise_for_status()
         run_data = resp.json()
@@ -97,7 +97,7 @@ def run(config, test_set_id, commit_sha, branch, pr_number, pipeline_version, ti
     deadline = time.time() + timeout
     poll_interval = 5
 
-    with httpx.Client(base_url=_api_url(cfg), headers=_headers(cfg), timeout=10) as client:
+    with httpx.Client(base_url=_api_url(cfg), headers=_headers(cfg), follow_redirects=True, timeout=10) as client:
         while time.time() < deadline:
             resp = client.get(f"/runs/{run_id}/status")
             resp.raise_for_status()
@@ -145,7 +145,7 @@ def gate(run_id, config, fail_on_regression):
     loader = ConfigLoader()
     cfg = loader.load(config)
 
-    with httpx.Client(base_url=_api_url(cfg), headers=_headers(cfg), timeout=15) as client:
+    with httpx.Client(base_url=_api_url(cfg), headers=_headers(cfg), follow_redirects=True, timeout=15) as client:
         resp = client.get(f"/metrics/gate/{run_id}")
         resp.raise_for_status()
         decision = resp.json()
@@ -216,7 +216,7 @@ def report(run_id, config, output_format, output, diff):
     loader = ConfigLoader()
     cfg = loader.load(config)
 
-    with httpx.Client(base_url=_api_url(cfg), headers=_headers(cfg), timeout=15) as client:
+    with httpx.Client(base_url=_api_url(cfg), headers=_headers(cfg), follow_redirects=True, timeout=15) as client:
         run_resp = client.get(f"/runs/{run_id}")
         run_resp.raise_for_status()
         run_data = run_resp.json()
