@@ -35,14 +35,15 @@ metrics:
   - context_precision     # Ragas: is retrieved context relevant?
   - context_recall        # Ragas: does context cover the ground truth?
   - rule_evaluation       # Always runs failure_rules from test cases
-  # Registry-driven evaluators (EVALUATOR_REGISTRY in runner/evaluators/__init__.py).
+  - citation              # Claim-level faithfulness — decomposes the answer into
+                          # atomic claims and verifies each; stricter than Ragas
+  - safety                # Layered safety scan — the regex layer is free and always on
+  # More registry-driven evaluators (EVALUATOR_REGISTRY in runner/evaluators/__init__.py).
   # Add any of these to activate — the worker dispatches automatically:
   # - g_eval              # Chain-of-thought LLM judge (Liu et al., EMNLP 2023)
-  # - citation            # Claim-level faithfulness
   # - trajectory          # Agent tool-sequence edit distance + arg validation
   # - robustness          # Paraphrase + adversarial consistency
   # - calibration         # Expected Calibration Error (batch-level, runs once per run)
-  # - safety              # Layered: regex + Presidio + Llama Guard (all optional)
   # - llm_judge           # Self-consistent LLM judge (k-sample median)
   # - pairwise            # A/B preference — for multi-model comparison runs only
 

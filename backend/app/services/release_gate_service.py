@@ -111,6 +111,46 @@ class ReleaseGateService:
                     )
                 )
 
+        # Non-RAG metrics (agent/chatbot/search/code_gen/...): per-case
+        # values live in the extended_metrics JSONB blob rather than a
+        # typed column. Give them the same bootstrap-CI + Mann-Whitney
+        # treatment so every system type gets a significance-aware gate.
+        for metric, threshold in thresholds.items():
+            if metric == "pass_rate" or metric in _METRIC_COLUMNS or threshold is None:
+                continue
+            current_vals = [
+                (r.extended_metrics or {}).get(metric) for r in current_results
+            ]
+            current_vals = [v for v in current_vals if isinstance(v, (int, float))]
+            if not current_vals:
+                continue
+            baseline_vals = [
+                (r.extended_metrics or {}).get(metric) for r in baseline_results
+            ]
+            baseline_vals = [v for v in baseline_vals if isinstance(v, (int, float))]
+
+            decision = significance_gate(
+                current_vals,
+                baseline=baseline_vals or None,
+                threshold=threshold,
+                higher_is_better=True,
+            )
+            if not decision.passed:
+                metric_failures.append(
+                    GateFailure(
+                        metric=metric,
+                        actual=decision.point_estimate,
+                        threshold=threshold,
+                        delta=decision.point_estimate - threshold,
+                        ci_lower=decision.ci_lower,
+                        ci_upper=decision.ci_upper,
+                        p_value=decision.p_value,
+                        sample_size=decision.sample_size,
+                        baseline_size=decision.baseline_size,
+                        reason=decision.reason,
+                    )
+                )
+
         # pass_rate: no per-case raw values — keep the classic check.
         pr_actual = summary.get("pass_rate")
         pr_threshold = thresholds.get("pass_rate")
@@ -231,11 +271,20 @@ class ReleaseGateService:
         current_summary = run.summary_metrics or {}
         baseline_summary = baseline.summary_metrics or {}
 
+        # Diff every aggregated metric the two runs share (avg_* covers all
+        # system types), not just the four RAG metrics.
         metric_deltas = {}
-        for metric in ("avg_faithfulness", "avg_answer_relevancy", "avg_context_precision", "avg_context_recall", "pass_rate"):
+        shared_keys = {"pass_rate"} | {
+            k for k in set(current_summary) | set(baseline_summary)
+            if k.startswith("avg_")
+        }
+        for metric in sorted(shared_keys):
             c = current_summary.get(metric)
             b = baseline_summary.get(metric)
-            metric_deltas[metric] = (c - b) if c is not None and b is not None else None
+            if not isinstance(c, (int, float)) or not isinstance(b, (int, float)):
+                metric_deltas[metric] = None
+                continue
+            metric_deltas[metric] = c - b
 
         return RegressionDiff(
             run_id=run_id,

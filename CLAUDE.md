@@ -100,19 +100,19 @@ When `create_run()` is called, a threshold snapshot is stored immutably on the r
 
 The harness supports 9 AI system types via the `SystemType` enum:
 
-| Type | Description | Key Metrics |
+| Type | Description | Default evaluator stack (`DEFAULT_METRICS` in `evaluation_service.py`) |
 |------|-------------|-------------|
-| `rag` | Retrieval-Augmented Generation | faithfulness, answer_relevancy, context_precision, context_recall |
-| `agent` | Tool-using AI agents | tool_accuracy, goal_completion, faithfulness |
-| `chatbot` | Multi-turn conversational AI | coherence, helpfulness, safety |
-| `search` | Search/information retrieval | ndcg, mrr, map, precision_at_k |
-| `code_gen` | Code generation systems | code_correctness, test_pass_rate |
-| `classification` | Text classification | accuracy, f1_score, precision, recall |
-| `summarization` | Text summarization | rouge_l, bleu, compression_ratio |
-| `translation` | Language translation | bleu, translation_accuracy |
+| `rag` | Retrieval-Augmented Generation | Ragas (faithfulness, answer_relevancy, context_precision, context_recall) + claim-level `citation` + `safety` + rules |
+| `agent` | Tool-using AI agents | tool_call_f1, tool_call_accuracy, goal_accuracy, step_efficiency + order-aware `trajectory` + `safety` + rules |
+| `chatbot` | Multi-turn conversational AI | coherence, knowledge_retention, role_adherence, response_relevance (n-gram heuristics) + `llm_judge` (semantics) + `safety` + rules |
+| `search` | Search/information retrieval | ndcg_at_k, map_at_k, mrr, precision_at_k, recall_at_k + rules |
+| `code_gen` | Code generation systems | pass_at_k, syntax_valid, security_score + rules |
+| `classification` | Text classification | accuracy, f1, macro_f1, precision, recall (+ batch micro/weighted F1, kappa, MCC) + rules |
+| `summarization` | Text summarization | rouge_1/2/L, bleu, semantic_similarity + rules |
+| `translation` | Language translation | sacrebleu, chrf_plus_plus, ter + rules |
 | `custom` | User-defined systems | configurable |
 
-System type is stored on `test_sets.system_type` and drives metric selection, UI display, and evaluator behavior.
+System type is stored on `test_sets.system_type` and drives metric selection, UI display, evaluator behavior, and the gate threshold snapshot (`DEFAULT_TYPE_THRESHOLDS` in `evaluation_service.py`, mirrored by the per-metric thresholds in `frontend/src/lib/system-metrics.ts`). The default stacks deliberately pair cheap deterministic heuristics with a registry evaluator that covers their blind spot (e.g. chatbot n-gram coherence + LLM judge).
 
 ### Key services
 
@@ -120,7 +120,7 @@ System type is stored on `test_sets.system_type` and drives metric selection, UI
 |---------|------|-------------|
 | Test Set Manager | `backend/app/services/test_set_service.py`, `test_case_service.py` | CRUD for test sets and cases; bumps test set version on every case mutation |
 | Evaluation Service | `backend/app/services/evaluation_service.py` | Creates run records, dispatches Celery task |
-| Release Gate | `backend/app/services/release_gate_service.py` | Significance-aware: pulls per-case raw scores, uses `_gate_stats.significance_gate()` (bootstrap CI + Mann-Whitney U) to compare to `gate_threshold_snapshot` and the last passing baseline; returns `ci_lower`/`ci_upper`/`p_value`/`sample_size` per failure |
+| Release Gate | `backend/app/services/release_gate_service.py` | Significance-aware: pulls per-case raw scores (typed RAG columns AND `extended_metrics` JSONB for all other system types), uses `_gate_stats.significance_gate()` (bootstrap CI + Mann-Whitney U) to compare to `gate_threshold_snapshot` and the last passing baseline; returns `ci_lower`/`ci_upper`/`p_value`/`sample_size` per failure |
 | Gate Stats (shared) | `backend/app/services/_gate_stats.py`, `runner/gate/stats.py` | Mirrored pure-Python `bootstrap_ci`, `mann_whitney_u`, `significance_gate`. Parity pinned by `backend/tests/test_gate_stats.py`. |
 | Metrics Service | `backend/app/services/metrics_service.py` | Reads from `metrics_history` for trend charts |
 | Ingestion Service | `backend/app/services/ingestion_service.py` | Production traffic ingestion with configurable sampling; user feedback (thumbs up/down) with aggregated stats |

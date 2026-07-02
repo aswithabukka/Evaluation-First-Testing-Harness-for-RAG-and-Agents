@@ -26,12 +26,44 @@ DEFAULT_ADAPTERS = {
 # Default metrics per system type — used when the caller sends the
 # generic RAG defaults (e.g. browser-triggered runs that don't know
 # which metrics to request).
+#
+# Each stack pairs the cheap deterministic evaluator for the system type
+# with the registry evaluators that catch what heuristics can't:
+#   - rag:     Ragas (LLM) + claim-level citation check + safety regex layer
+#   - agent:   set-based tool F1 + order-aware trajectory + safety
+#   - chatbot: n-gram heuristics + LLM judge (semantics) + safety
+# The registry names (citation/trajectory/safety/llm_judge) come from
+# EVALUATOR_REGISTRY; the worker dispatches them per case automatically.
 _RAG_METRICS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall", "rule_evaluation"]
 DEFAULT_METRICS = {
-    "rag":     _RAG_METRICS,
-    "agent":   ["tool_call_f1", "tool_call_accuracy", "goal_accuracy", "step_efficiency", "rule_evaluation"],
-    "chatbot": ["coherence", "knowledge_retention", "role_adherence", "response_relevance", "rule_evaluation"],
+    "rag":     _RAG_METRICS + ["citation", "safety"],
+    "agent":   ["tool_call_f1", "tool_call_accuracy", "goal_accuracy", "step_efficiency",
+                "trajectory", "safety", "rule_evaluation"],
+    "chatbot": ["coherence", "knowledge_retention", "role_adherence", "response_relevance",
+                "llm_judge", "safety", "rule_evaluation"],
     "search":  ["ndcg_at_k", "map_at_k", "mrr", "precision_at_k", "recall_at_k", "rule_evaluation"],
+    "code_gen":       ["pass_at_k", "syntax_valid", "security_score", "rule_evaluation"],
+    "classification": ["accuracy", "f1", "macro_f1", "precision", "recall", "rule_evaluation"],
+    "summarization":  ["rouge_l", "rouge_1", "rouge_2", "bleu", "semantic_similarity", "rule_evaluation"],
+    "translation":    ["sacrebleu", "chrf_plus_plus", "ter", "rule_evaluation"],
+}
+
+# Default gate thresholds per system type. Mirrors the per-metric
+# thresholds in frontend/src/lib/system-metrics.ts so the dashboard and
+# the gate agree on what "healthy" means. RAG thresholds stay env-tunable
+# for backward compatibility; pass_rate is added for every type.
+# Lower-is-better metrics (e.g. TER) are deliberately absent — the gate
+# loop only supports higher-is-better comparisons.
+DEFAULT_TYPE_THRESHOLDS: dict[str, dict[str, float]] = {
+    "agent":          {"tool_call_f1": 0.7, "tool_call_accuracy": 0.7,
+                       "goal_accuracy": 0.7, "step_efficiency": 0.5},
+    "chatbot":        {"coherence": 0.6, "knowledge_retention": 0.6,
+                       "role_adherence": 0.7, "response_relevance": 0.5},
+    "search":         {"ndcg_at_k": 0.5, "map_at_k": 0.5, "mrr": 0.5, "recall_at_k": 0.5},
+    "code_gen":       {"pass_at_k": 0.5, "syntax_valid": 0.9, "security_score": 0.7},
+    "classification": {"accuracy": 0.7, "f1": 0.7, "macro_f1": 0.7},
+    "summarization":  {"rouge_l": 0.3, "rouge_1": 0.3, "rouge_2": 0.2},
+    "translation":    {"sacrebleu": 0.3, "chrf_plus_plus": 0.4},
 }
 
 
@@ -56,18 +88,30 @@ class EvaluationService:
             pipeline_config = DEFAULT_ADAPTERS.get(system_type, DEFAULT_ADAPTERS["rag"]).copy()
 
         # Auto-select metrics if the caller sent the generic RAG defaults
+        # (the schema default). Applies to every system type, including
+        # rag — its full default stack adds citation + safety on top of
+        # the four Ragas metrics.
         metrics = payload.metrics
-        if metrics == _RAG_METRICS and system_type != "rag":
+        if metrics == _RAG_METRICS:
             metrics = DEFAULT_METRICS.get(system_type, _RAG_METRICS)
 
+        # Build the immutable threshold snapshot for this run's system type.
+        # Without per-type thresholds the gate would silently degrade to a
+        # pass_rate-only check for every non-RAG system.
         thresholds = payload.thresholds
-        threshold_snapshot = {
-            "faithfulness": thresholds.faithfulness if thresholds else settings.DEFAULT_FAITHFULNESS_THRESHOLD,
-            "answer_relevancy": thresholds.answer_relevancy if thresholds else settings.DEFAULT_ANSWER_RELEVANCY_THRESHOLD,
-            "context_precision": thresholds.context_precision if thresholds else settings.DEFAULT_CONTEXT_PRECISION_THRESHOLD,
-            "context_recall": thresholds.context_recall if thresholds else settings.DEFAULT_CONTEXT_RECALL_THRESHOLD,
-            "pass_rate": thresholds.pass_rate if thresholds else settings.DEFAULT_PASS_RATE_THRESHOLD,
-        }
+        if system_type == "rag" or system_type not in DEFAULT_TYPE_THRESHOLDS:
+            threshold_snapshot = {
+                "faithfulness": thresholds.faithfulness if thresholds else settings.DEFAULT_FAITHFULNESS_THRESHOLD,
+                "answer_relevancy": thresholds.answer_relevancy if thresholds else settings.DEFAULT_ANSWER_RELEVANCY_THRESHOLD,
+                "context_precision": thresholds.context_precision if thresholds else settings.DEFAULT_CONTEXT_PRECISION_THRESHOLD,
+                "context_recall": thresholds.context_recall if thresholds else settings.DEFAULT_CONTEXT_RECALL_THRESHOLD,
+                "pass_rate": thresholds.pass_rate if thresholds else settings.DEFAULT_PASS_RATE_THRESHOLD,
+            }
+        else:
+            threshold_snapshot = dict(DEFAULT_TYPE_THRESHOLDS[system_type])
+            threshold_snapshot["pass_rate"] = (
+                thresholds.pass_rate if thresholds else settings.DEFAULT_PASS_RATE_THRESHOLD
+            )
 
         run = EvaluationRun(
             test_set_id=payload.test_set_id,
